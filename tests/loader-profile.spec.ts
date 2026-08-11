@@ -1,10 +1,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Include from '@cordisjs/plugin-include'
 import Loader from '@cordisjs/plugin-loader'
+import { YiTraceDB } from '@yitrace/db'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { TelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
@@ -37,23 +37,7 @@ const RedactionRule = {
 describe('standalone Loader profile', () => {
   it('loads YAML composition and exports only the redacted record copy', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-trace-loader-'))
-    const captures: unknown[] = []
-    const server = createServer((request, response) => {
-      const chunks: Buffer[] = []
-      request.on('data', chunk => chunks.push(chunk as Buffer))
-      request.on('end', () => {
-        captures.push(JSON.parse(Buffer.concat(chunks).toString()) as unknown)
-        response.writeHead(200, { 'content-type': 'application/json' }).end('{}')
-      })
-    })
-    server.listen(0, '127.0.0.1')
-    await new Promise<void>((resolve, reject) => {
-      server.once('listening', resolve)
-      server.once('error', reject)
-    })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('loader yiTrace mock has no port')
-
+    const dataDir = join(root, 'database')
     const configPath = join(root, 'cordis.yml')
     await writeFile(configPath, [
       '- id: sessions',
@@ -63,8 +47,8 @@ describe('standalone Loader profile', () => {
       '- id: dsh-trace',
       "  name: '@deepseek-ai/dsh-trace'",
       '  config:',
-      '    exporter:',
-      `      url: http://127.0.0.1:${address.port}/v1/ingest`,
+      '    database:',
+      `      dataDir: ${JSON.stringify(dataDir)}`,
       '    batchSize: 2',
       '',
     ].join('\n'))
@@ -113,15 +97,25 @@ describe('standalone Loader profile', () => {
 
       await ctx.fiber.dispose()
       disposed = true
-      const wire = JSON.stringify(captures)
-      expect(wire).not.toContain(SECRET)
-      expect(wire).toContain(REDACTED)
-      expect(wire).toContain('dsh.turn')
-      expect(wire).toContain('dsh.step')
+      const database = await YiTraceDB.open({ dataDir })
+      try {
+        const traces = await database.traces<{ external_trace_id: string }>()
+        const detail = await database.trace<{ spans: Array<{ id: string; externalSpanId: string }> }>(
+          traces[0]!.external_trace_id,
+        )
+        const spans = await Promise.all(detail!.spans.map(span => (
+          database.span(traces[0]!.external_trace_id, span.externalSpanId ?? span.id)
+        )))
+        const stored = JSON.stringify({ traces, detail, spans })
+        expect(stored).not.toContain(SECRET)
+        expect(stored).toContain(REDACTED)
+        expect(stored).toContain('dsh.turn')
+        expect(stored).toContain('dsh.step')
+      } finally {
+        await database.close()
+      }
     } finally {
       if (!disposed) await ctx.fiber.dispose()
-      server.closeAllConnections()
-      server.close()
       await rm(root, { recursive: true, force: true })
     }
   })
