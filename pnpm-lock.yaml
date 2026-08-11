@@ -34,6 +34,9 @@ importers:
       '@deepseek-ai/dsh-session-telemetry':
         specifier: link:../test-vibeinging/packages/telemetry/session-telemetry
         version: link:../test-vibeinging/packages/telemetry/session-telemetry
+      '@yitrace/db':
+        specifier: ^0.1.8
+        version: 0.1.8
       '@yitrace/trace-sdk':
         specifier: ^0.1.8
         version: 0.1.8
@@ -357,6 +360,42 @@ packages:
 
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
+
+  '@yitrace/db-darwin-arm64@0.1.8':
+    resolution: {integrity: sha512-UZ41EKheYh6YLVEccTVjyQgBs4YYxm4+zNYTXdejcG9P+sfwLPjA1A9Aw28lXD//2i96vaZ7n8u0Zo/Rrfy0yw==}
+    engines: {node: '>=18.17'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@yitrace/db-darwin-x64@0.1.8':
+    resolution: {integrity: sha512-rURNwMRzfMBiSLS8QVl+IgedsqFLrdb9IitVidVwCVpb4Plmgfj1fqkDgq9x+BrhP08IEQMfXmg+VuD0aWJZtg==}
+    engines: {node: '>=18.17'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@yitrace/db-linux-arm64-gnu@0.1.8':
+    resolution: {integrity: sha512-4W2LEXVxdRkSz2u9A0rxGNOyy0dn2Xq8qg5nn5OwG9kUBXBtkCRtgBgrc6pMaqSzJtd/G6aiNfMp1UZl4SGrCg==}
+    engines: {node: '>=18.17'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@yitrace/db-linux-x64-gnu@0.1.8':
+    resolution: {integrity: sha512-1bJtahGibTiSGBQDJopG6jWELDl6MSLvCQ3NtOn9j1MGuA3Rx18zIDbrA1JnY8aiC6+6KC9xmvKMi7frw4yjHA==}
+    engines: {node: '>=18.17'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@yitrace/db-win32-x64-msvc@0.1.8':
+    resolution: {integrity: sha512-AkHEZD+i5oFm7OEfA30I/6PMdZoEry5hCwx9kdvCg3bdwJRQe+z38UUV5UE8luVV6Nkhqn/BlUwGZvgGGGjtqw==}
+    engines: {node: '>=18.17'}
+    cpu: [x64]
+    os: [win32]
+
+  '@yitrace/db@0.1.8':
+    resolution: {integrity: sha512-vyAi0Q9wbuct6R9Rne3j5K1KPJ8Q2UknA2ON0/HjZl4jWX1ps2enxRRLf5DsCgfJMGvXCzaoOndnsMjmh2K50w==}
+    engines: {node: '>=18.17'}
 
   '@yitrace/trace-sdk@0.1.8':
     resolution: {integrity: sha512-LS/5czJZAhm4XUuC+28zvhojT/8JOl2Dg5liRIYFWgdgbCzAu1sEFIvLP6cOLydkzK4NtaGCtBWxAYZvaAG3sg==}
@@ -1084,6 +1123,29 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
+
+  '@yitrace/db-darwin-arm64@0.1.8':
+    optional: true
+
+  '@yitrace/db-darwin-x64@0.1.8':
+    optional: true
+
+  '@yitrace/db-linux-arm64-gnu@0.1.8':
+    optional: true
+
+  '@yitrace/db-linux-x64-gnu@0.1.8':
+    optional: true
+
+  '@yitrace/db-win32-x64-msvc@0.1.8':
+    optional: true
+
+  '@yitrace/db@0.1.8':
+    optionalDependencies:
+      '@yitrace/db-darwin-arm64': 0.1.8
+      '@yitrace/db-darwin-x64': 0.1.8
+      '@yitrace/db-linux-arm64-gnu': 0.1.8
+      '@yitrace/db-linux-x64-gnu': 0.1.8
+      '@yitrace/db-win32-x64-msvc': 0.1.8
 
   '@yitrace/trace-sdk@0.1.8': {}
 

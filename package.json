@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-trace",
-  "description": "Trace plugin for DeepSeek Harness: exports turns, model steps, and tool calls through the yiTrace HTTP SDK",
+  "description": "Embedded yiTrace plugin for DeepSeek Harness turns, model steps, and tool calls",
   "version": "0.0.1",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -47,6 +47,7 @@
   },
   "license": "BSD-3-Clause",
   "dependencies": {
+    "@yitrace/db": "^0.1.8",
     "@yitrace/trace-sdk": "^0.1.8",
     "schemastery": "^3.18.0"
   },

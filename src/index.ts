@@ -1,68 +1,65 @@
 /**
  * dsh-trace plugin backed by the DeepSeek Harness session-telemetry seam.
  *
- * The backend converts the seam's already-redacted logical records into a
+ * The backend converts the seam's post-waterfall logical records into a
  * yiTrace hierarchy: one trace per DSH turn, step spans under the turn, and
- * tool spans under their step. Delivery, retry buffering, deterministic event
- * ids, and wire encoding remain owned by `@yitrace/trace-sdk`.
+ * tool spans under their step. It writes the SDK wire events directly through
+ * yiTrace's embedded Node-API database; no HTTP server or socket is involved.
  *
  * @module @deepseek-ai/dsh-trace
  */
 
 import z from 'schemastery'
-import type { Context } from 'cordis'
+import { resolve } from 'node:path'
+import { Service, type Context } from 'cordis'
 import { APP_IDENTITY, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEventMap, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { Telemetry, TelemetryCoordinator, type TelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
+import { YiTraceDB, type SpanEvent as DatabaseSpanEvent } from '@yitrace/db'
 import {
   BatchExporter,
   EventType,
-  HttpExporter,
   Snowflake,
+  toWire,
+  type Exporter,
   type SpanEvent,
 } from '@yitrace/trace-sdk'
 
 type AttributeValue = string | number | boolean
 
-/** HTTP exporter settings passed to yiTrace after load-time validation. */
-export interface TraceExporterConfig {
-  /** Full yiTrace ingest endpoint, normally ending in `/v1/ingest`. */
-  url: string
-  /** Additional HTTP headers. `token`, when present, owns `Authorization`. */
-  headers?: Record<string, string>
-  /** Bearer token sent by yiTrace's HTTP exporter. */
-  token?: string
-  /** Unsigned 64-bit tenant id sent as `X-Tenant-Id`. */
+/** Embedded yiTrace database settings after load-time validation. */
+export interface TraceDatabaseConfig {
+  /** Local yiTrace data directory; relative paths resolve from the process working directory at load. */
+  dataDir: string
+  /** Optional unsigned 64-bit tenant id applied to embedded writes and span events. */
   tenantId?: string | number
-  /** Maximum failed events retained in the yiTrace SDK's in-memory retry buffer. */
+  /** Maximum failed events retained in the embedded writer's in-memory retry buffer. */
   maxBuffered?: number
 }
 
 /** Cordis plugin configuration for dsh-trace. */
 export interface Config {
-  /** yiTrace HTTP exporter settings. */
-  exporter: TraceExporterConfig
-  /** Events collected before the serial yiTrace SDK batch exporter sends one request. */
+  /** yiTrace embedded database settings. */
+  database: TraceDatabaseConfig
+  /** Events collected before one serial embedded database ingest. */
   batchSize?: number
   /** Optional yiTrace Snowflake node id; omit to derive it from the process id. */
   nodeId?: number
   /** Agent name attached to every emitted yiTrace span. */
   agentName?: string
-  /** Outer deadline for draining the yiTrace SDK during plugin disposal. */
+  /** Outer deadline for draining queued writes and closing the database during plugin disposal. */
   shutdownTimeoutMillis?: number
 }
 
-const TraceExporterConfig: z<TraceExporterConfig> = z.object({
-  url: z.string().required(),
-  headers: z.dict(z.string()),
-  token: z.string(),
+const TraceDatabaseConfig: z<TraceDatabaseConfig> = z.object({
+  dataDir: z.string().required(),
   tenantId: z.union([z.string(), z.number()]),
   maxBuffered: z.number(),
 }).required()
 
 /** Schemastery validator for {@link Config}. */
 export const Config: z<Config> = z.object({
-  exporter: TraceExporterConfig,
+  database: TraceDatabaseConfig,
   batchSize: z.number(),
   nodeId: z.number(),
   agentName: z.string(),
@@ -81,10 +78,8 @@ const FNV_OFFSET = 0xcbf29ce484222325n
 const FNV_PRIME = 0x100000001b3n
 
 interface ResolvedConfig {
-  exporter: {
-    url: string
-    headers: Record<string, string>
-    token?: string
+  database: {
+    dataDir: string
     tenantId?: bigint
     maxBuffered: number
   }
@@ -137,38 +132,31 @@ function positiveInteger(value: number, field: string): number {
   return value
 }
 
-function parseUrl(value: string): string {
-  let parsed: URL
-  try {
-    parsed = new URL(value)
-  } catch {
-    throw new Error(`dsh-trace: exporter.url is not a valid URL: ${JSON.stringify(value)}`)
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`dsh-trace: exporter.url must be http(s), got ${parsed.protocol}`)
-  }
-  return value
+function parseDataDir(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) throw new Error('dsh-trace: database.dataDir must not be empty')
+  return resolve(trimmed)
 }
 
 function parseTenantId(value: string | number | undefined): bigint | undefined {
   if (value === undefined) return undefined
   if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
-    throw new Error(`dsh-trace: exporter.tenantId must be an unsigned 64-bit integer, got ${String(value)}`)
+    throw new Error(`dsh-trace: database.tenantId must be an unsigned 64-bit integer, got ${String(value)}`)
   }
   if (typeof value === 'string' && !/^\d+$/.test(value)) {
-    throw new Error(`dsh-trace: exporter.tenantId must be an unsigned 64-bit integer, got ${JSON.stringify(value)}`)
+    throw new Error(`dsh-trace: database.tenantId must be an unsigned 64-bit integer, got ${JSON.stringify(value)}`)
   }
   const parsed = BigInt(value)
   if (parsed > MAX_U64) {
-    throw new Error(`dsh-trace: exporter.tenantId exceeds the unsigned 64-bit range: ${String(value)}`)
+    throw new Error(`dsh-trace: database.tenantId exceeds the unsigned 64-bit range: ${String(value)}`)
   }
   return parsed
 }
 
 function resolveConfig(config: Config): ResolvedConfig {
   const batchSize = positiveInteger(config.batchSize ?? DEFAULT_BATCH_SIZE, 'batchSize')
-  const maxBuffered = positiveInteger(config.exporter.maxBuffered ?? batchSize * 16, 'exporter.maxBuffered')
-  const tenantId = parseTenantId(config.exporter.tenantId)
+  const maxBuffered = positiveInteger(config.database.maxBuffered ?? batchSize * 16, 'database.maxBuffered')
+  const tenantId = parseTenantId(config.database.tenantId)
   const shutdownTimeoutMillis = config.shutdownTimeoutMillis ?? DEFAULT_SHUTDOWN_TIMEOUT_MILLIS
   if (!Number.isFinite(shutdownTimeoutMillis) || shutdownTimeoutMillis <= 0
     || shutdownTimeoutMillis > MAX_TIMER_DELAY_MILLIS) {
@@ -182,14 +170,9 @@ function resolveConfig(config: Config): ResolvedConfig {
   }
   const agentName = (config.agentName ?? APP_IDENTITY.product).trim()
   if (agentName.length === 0) throw new Error('dsh-trace: agentName must not be empty')
-  if (config.exporter.token !== undefined && config.exporter.token.length === 0) {
-    throw new Error('dsh-trace: exporter.token must not be empty')
-  }
   return {
-    exporter: {
-      url: parseUrl(config.exporter.url),
-      headers: { ...config.exporter.headers },
-      ...config.exporter.token === undefined ? {} : { token: config.exporter.token },
+    database: {
+      dataDir: parseDataDir(config.database.dataDir),
       ...tenantId === undefined ? {} : { tenantId },
       maxBuffered,
     },
@@ -257,6 +240,88 @@ function contentText(blocks: readonly ContentBlock[]): string {
 
 function turnStatus(reason: TurnEndReason): number {
   return reason.kind === 'completed' ? 0 : 1
+}
+
+function toDatabaseEvent(event: SpanEvent): DatabaseSpanEvent {
+  // The SDK declaration intentionally exposes its encoded object as
+  // `Record<string, unknown>`; the embedded database accepts that same wire
+  // shape, with per-span `seq` represented as a safe JavaScript number.
+  return { ...toWire(event), seq: Number(event.seq) } as DatabaseSpanEvent
+}
+
+class EmbeddedExporter implements Exporter {
+  private buffered: SpanEvent[] = []
+  private closePromise: Promise<void> | undefined
+  private lastError: unknown
+  private closed = false
+
+  constructor(
+    private readonly database: YiTraceDB,
+    private readonly maxBuffered: number,
+    private readonly onError: (error: unknown, dropped: number) => void,
+  ) {}
+
+  export(event: SpanEvent): void {
+    if (this.closed) throw new Error('dsh-trace: cannot export after embedded database shutdown')
+    this.buffered.push(event)
+  }
+
+  async exportBatch(events: SpanEvent[]): Promise<void> {
+    if (this.closed) throw new Error('dsh-trace: cannot export after embedded database shutdown')
+    await this.ingest(events)
+  }
+
+  async flush(): Promise<void> {
+    if (this.closed) return
+    if (this.buffered.length > 0) {
+      const batch = this.buffered.splice(0)
+      await this.ingest(batch)
+    }
+    await this.database.flush()
+  }
+
+  close(): Promise<void> {
+    this.closePromise ??= this.closeOnce()
+    return this.closePromise
+  }
+
+  private async ingest(events: SpanEvent[]): Promise<void> {
+    if (events.length === 0) return
+    try {
+      await this.database.ingest(events.map(toDatabaseEvent))
+      if (this.buffered.length === 0) this.lastError = undefined
+    } catch (error) {
+      this.lastError = error
+      this.buffered = events.concat(this.buffered)
+      const dropped = Math.max(0, this.buffered.length - this.maxBuffered)
+      if (dropped > 0) this.buffered = this.buffered.slice(dropped)
+      this.onError(error, dropped)
+    }
+  }
+
+  private async closeOnce(): Promise<void> {
+    const errors: unknown[] = []
+    try {
+      await this.flush()
+      if (this.buffered.length > 0) {
+        errors.push(new Error(
+          `dsh-trace: embedded database closed with ${this.buffered.length} buffered events`,
+          { cause: this.lastError },
+        ))
+      }
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await this.database.close()
+    } catch (error) {
+      errors.push(error)
+    } finally {
+      this.closed = true
+    }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'dsh-trace: embedded database shutdown failed')
+  }
 }
 
 class OpenSpan {
@@ -361,19 +426,19 @@ class OpenSpan {
 }
 
 /**
- * Loadable dsh-trace plugin. The class owns only projection state; the seam owns
- * capture and redaction, while the yiTrace SDK owns transport behavior.
+ * Loadable dsh-trace plugin. The class owns projection and embedded-delivery
+ * state; the seam owns capture and deployment-mounted redaction.
  */
 export class DshTrace extends Telemetry {
   static inject = ['sessions']
   static Config = Config
 
   private readonly ids: Snowflake
-  private readonly http: HttpExporter
-  private readonly exporter: BatchExporter
   private readonly sessions = new Map<string, SessionState>()
   private readonly resolved: ResolvedConfig
   private readonly logger: Context['logger']
+  private embedded: EmbeddedExporter | undefined
+  private exporter: BatchExporter | undefined
   private delivery = Promise.resolve()
   private shutdownPromise: Promise<void> | undefined
 
@@ -382,23 +447,32 @@ export class DshTrace extends Telemetry {
     this.resolved = resolveConfig(config)
     this.logger = ctx.logger
     this.ids = new Snowflake(this.resolved.nodeId)
-    this.http = new HttpExporter({
-      url: this.resolved.exporter.url,
-      headers: this.resolved.exporter.headers,
-      ...this.resolved.exporter.token === undefined ? {} : { token: this.resolved.exporter.token },
-      ...this.resolved.exporter.tenantId === undefined ? {} : { tenantId: this.resolved.exporter.tenantId },
-      max: this.resolved.batchSize,
-      maxBuffered: this.resolved.exporter.maxBuffered,
-      onError: (error, dropped) => {
-        ctx.logger.warn(`dsh-trace: export failed (${dropped} buffered events dropped)`, error)
-      },
+  }
+
+  /** Open the embedded database before the telemetry capture listeners become active. */
+  protected async* [Service.init](): AsyncGenerator<() => Promise<void>, void, void> {
+    const database = await YiTraceDB.open({
+      dataDir: this.resolved.database.dataDir,
+      ...this.resolved.database.tenantId === undefined
+        ? {}
+        : { tenantId: this.resolved.database.tenantId.toString() },
     })
-    this.exporter = new BatchExporter(this.http, this.resolved.batchSize)
-    new TelemetryCoordinator(ctx, this)
+    this.embedded = new EmbeddedExporter(
+      database,
+      this.resolved.database.maxBuffered,
+      (error, dropped) => {
+        this.logger.warn(`dsh-trace: embedded ingest failed (${dropped} buffered events dropped)`, error)
+      },
+    )
+    this.exporter = new BatchExporter(this.embedded, this.resolved.batchSize)
+    yield async () => {
+      await this.shutdown()
+    }
+    new TelemetryCoordinator(this.ctx, this)
   }
 
   /**
-   * Project one already-redacted seam record into the open yiTrace hierarchy.
+   * Project one post-waterfall seam record into the open yiTrace hierarchy.
    * The method only creates SDK events and enqueues them in memory.
    * @param record - logical record handed over synchronously by the seam.
    */
@@ -413,18 +487,19 @@ export class DshTrace extends Telemetry {
     }
   }
 
-  /** Forward a natural seam boundary into the serial SDK and retry queues. */
+  /** Forward a natural seam boundary into the serial embedded writer and retry buffer. */
   override flush(): void {
     void this.queueDelivery('flush', async () => {
-      await this.exporter.flush()
-      await this.http.flush()
+      await this.requireExporter().flush()
+      await this.requireEmbedded().flush()
     })
   }
 
   /**
-   * Close open spans, drain the yiTrace SDK, and stop awaiting after the
-   * configured outer deadline. The underlying HTTP request cannot be canceled.
-   * @returns fulfillment after the SDK quiesces or rejection at the deadline.
+   * Close open spans, drain queued writes, and stop awaiting after the
+   * configured outer deadline. A native database call already in progress
+   * cannot be canceled.
+   * @returns fulfillment after the database closes, or rejection at the deadline.
    */
   override shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) return this.shutdownPromise
@@ -436,12 +511,12 @@ export class DshTrace extends Telemetry {
     const time = Date.now()
     for (const [id, state] of this.sessions) this.closeSession(id, state, time)
     const close = this.queueDelivery('shutdown', async () => {
-      await this.exporter.close()
+      await this.requireExporter().close()
     })
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`dsh-trace: SDK shutdown exceeded ${this.resolved.shutdownTimeoutMillis}ms`))
+        reject(new Error(`dsh-trace: embedded database shutdown exceeded ${this.resolved.shutdownTimeoutMillis}ms`))
       }, this.resolved.shutdownTimeoutMillis)
     })
     try {
@@ -450,6 +525,16 @@ export class DshTrace extends Telemetry {
       /* v8 ignore else -- the Promise executor assigns synchronously. */
       if (timer !== undefined) clearTimeout(timer)
     }
+  }
+
+  private requireExporter(): BatchExporter {
+    if (this.exporter === undefined) throw new Error('dsh-trace: embedded exporter is not initialized')
+    return this.exporter
+  }
+
+  private requireEmbedded(): EmbeddedExporter {
+    if (this.embedded === undefined) throw new Error('dsh-trace: embedded database is not initialized')
+    return this.embedded
   }
 
   private queueDelivery(label: string, operation: () => Promise<void>): Promise<void> {
@@ -688,11 +773,11 @@ export class DshTrace extends Telemetry {
   }
 
   private openSpan(spec: Omit<SpanSpec, 'spanId' | 'agentName' | 'tenantId'>): OpenSpan {
-    return new OpenSpan(this.exporter, {
+    return new OpenSpan(this.requireExporter(), {
       ...spec,
       spanId: this.ids.next(),
       agentName: this.resolved.agentName,
-      tenantId: this.resolved.exporter.tenantId ?? null,
+      tenantId: this.resolved.database.tenantId ?? null,
     })
   }
 

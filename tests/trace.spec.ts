@@ -1,12 +1,14 @@
 /**
- * yiTrace backend unit tier: project real session records through the real
- * `@yitrace/trace-sdk` HTTP pipeline and assert the resulting trace tree.
+ * yiTrace backend unit tier: project real session records into the embedded
+ * database, close it, reopen it, and assert the durable trace read model.
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { createServer, type Server } from 'node:http'
-import { once } from 'node:events'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from 'cordis'
+import { YiTraceDB } from '@yitrace/db'
 import {
   CallId,
   createAssistantMessage,
@@ -14,87 +16,113 @@ import {
   createUserMessage,
 } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import DshTrace from '../src/index.ts'
+import DshTrace, { type Config } from '../src/index.ts'
 
-interface WireEvent {
-  trace_id: string
-  span_id: string
-  seq: string
-  event_type: number
-  ext_span_id: string
-  parent_span_id: string | null
-  event_id: string
-  status: number | null
-  duration_ns: string | null
-  input_tokens: string | null
-  output_tokens: string | null
-  cache_read_tokens: string | null
-  cache_write_tokens: string | null
-  session_id: string | null
-  tenant_id: string | null
-  span_name: string | null
-  agent_name: string | null
-  tool_name: string | null
+interface StoredTraceSummary {
+  trace_id: string | number
+  external_trace_id: string
+  span_count: number
+  error_count: number
+  total_input_tokens: number | null
+  total_output_tokens: number | null
+  total_cache_read_tokens: number | null
+}
+
+interface StoredTraceSpan {
+  id: string
+  parentId: string | null
+  externalSpanId: string
+  externalParentSpanId: string | null
+  externalSessionId: string | null
+  spanName: string
+  agentName: string | null
+  toolName: string | null
+  status: string
+  inTok: number
+  outTok: number
+  cacheReadTokens: number | null
   model: string | null
-  input_text: string | null
-  output_text: string | null
-  logs: string[]
-  attrs: Record<string, string | number | boolean>
+  attrs: Record<string, unknown>
+  logEvents: Array<{ messages: string[] }>
 }
 
-interface Capture {
-  headers: import('node:http').IncomingHttpHeaders
-  events: WireEvent[]
+interface StoredTraceDetail {
+  spans: StoredTraceSpan[]
 }
 
-const servers: Server[] = []
+interface StoredSpanDetail {
+  id: string
+  externalSpanId: string
+  externalParentSpanId: string | null
+  spanName: string
+  agentName: string | null
+  toolName: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number | null
+  model: string | null
+  input: string | null
+  output: string | null
+  attrs: Record<string, unknown>
+  logEvents: Array<{ messages: string[] }>
+}
 
-afterEach(() => {
-  for (const server of servers.splice(0)) {
-    server.close()
-    server.closeAllConnections()
-  }
+interface StoredTrace {
+  summary: StoredTraceSummary
+  detail: StoredTraceDetail
+  spans: StoredSpanDetail[]
+}
+
+const directories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
-async function mockYiTrace(statuses: readonly number[] = []): Promise<{ url: string; captures: Capture[] }> {
-  const captures: Capture[] = []
-  const server = createServer((request, response) => {
-    const chunks: Buffer[] = []
-    request.on('data', chunk => chunks.push(chunk as Buffer))
-    request.on('end', () => {
-      captures.push({
-        headers: request.headers,
-        events: JSON.parse(Buffer.concat(chunks).toString()) as WireEvent[],
-      })
-      const status = statuses[captures.length - 1] ?? 200
-      response.writeHead(status, { 'content-type': 'application/json' }).end('{}')
-    })
-  })
-  servers.push(server)
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  if (address === null || typeof address === 'string') throw new Error('yiTrace mock has no port')
-  return { url: `http://127.0.0.1:${address.port}/v1/ingest`, captures }
+async function traceDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-trace-embedded-'))
+  directories.push(directory)
+  return directory
 }
 
-function flatten(captures: Capture[]): WireEvent[] {
-  return captures.flatMap(capture => capture.events)
+async function readTraces(dataDir: string, tenantId?: string | number): Promise<StoredTrace[]> {
+  const database = await YiTraceDB.open({ dataDir, ...tenantId === undefined ? {} : { tenantId } })
+  try {
+    const summaries = await database.traces<StoredTraceSummary>()
+    return await Promise.all(summaries.map(async (summary) => {
+      const traceId = summary.external_trace_id ?? summary.trace_id
+      const detail = await database.trace<StoredTraceDetail>(traceId)
+      if (detail === null) throw new Error(`missing embedded trace detail: ${String(traceId)}`)
+      const spans = await Promise.all(detail.spans.map(async (span) => {
+        const stored = await database.span<StoredSpanDetail>(traceId, span.externalSpanId ?? span.id)
+        if (stored === null) throw new Error(`missing embedded span detail: ${span.id}`)
+        return stored
+      }))
+      return { summary, detail, spans }
+    }))
+  } finally {
+    await database.close()
+  }
 }
 
-describe('DshTrace wire', () => {
-  it('maps one turn into turn, step, and tool spans through the real SDK pipeline', async () => {
-    const { url, captures } = await mockYiTrace()
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    const fiber = await ctx.plugin(DshTrace, {
-      exporter: { url, token: 'wire-token', tenantId: '7' },
+async function loadTrace(config: Config): Promise<{ ctx: Context; fiber: Awaited<ReturnType<Context['plugin']>> }> {
+  const ctx = new Context()
+  await ctx.plugin(SessionStore)
+  const fiber = await ctx.plugin(DshTrace, config)
+  return { ctx, fiber }
+}
+
+describe('DshTrace embedded database', () => {
+  it('persists one turn as turn, step, and tool spans', async () => {
+    const dataDir = await traceDirectory()
+    const { ctx, fiber } = await loadTrace({
+      database: { dataDir, tenantId: '7' },
       batchSize: 3,
       nodeId: 9,
       agentName: 'dsh-test-agent',
     })
 
-    const session = ctx.sessions.create(SessionId('wire-session'), { meta: { cwd: '/tmp/project' } })
+    const session = ctx.sessions.create(SessionId('embedded-session'), { meta: { cwd: '/tmp/project' } })
     const callId = CallId('call-1')
     session.append('turn/start', { turn: 1 })
     session.append('step/start', { turn: 1, step: 1 })
@@ -125,94 +153,78 @@ describe('DshTrace wire', () => {
     session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await fiber.dispose()
 
-    const events = flatten(captures)
-    expect(events.length).toBeGreaterThan(0)
-    expect(captures[0]?.headers.authorization).toBe('Bearer wire-token')
-    expect(captures[0]?.headers['x-tenant-id']).toBe('7')
-
-    const starts = events.filter(event => event.event_type === 1)
-    const turn = starts.find(event => event.span_name === 'dsh.turn')
-    const step = starts.find(event => event.span_name === 'dsh.step')
-    const tool = starts.find(event => event.span_name === 'tool.bash')
-    expect(turn).toBeDefined()
-    expect(step?.parent_span_id).toBe(turn?.span_id)
-    expect(tool?.parent_span_id).toBe(step?.span_id)
-    expect(new Set(starts.map(event => event.trace_id))).toEqual(new Set([turn?.trace_id]))
-    expect(new Set(starts.map(event => event.session_id)).size).toBe(1)
-    expect(starts.every(event => event.tenant_id === '7')).toBe(true)
-    expect(starts.every(event => event.agent_name === 'dsh-test-agent')).toBe(true)
-
-    const stepEnd = events.find(event => event.event_type === 2 && event.span_id === step?.span_id)
-    expect(stepEnd).toMatchObject({
-      status: 0,
-      input_tokens: '11',
-      output_tokens: '3',
-      cache_read_tokens: '2',
-      model: 'mock-model',
-      input_text: 'check this repository',
+    const [stored] = await readTraces(dataDir, '7')
+    expect(stored?.summary).toMatchObject({
+      span_count: 3,
+      error_count: 0,
+      total_input_tokens: 11,
+      total_output_tokens: 3,
+      total_cache_read_tokens: 2,
     })
-    expect(stepEnd?.output_text).toContain('bash({"command":"pwd"})')
-    expect(stepEnd?.attrs).toMatchObject({
+    const turn = stored?.detail.spans.find(span => span.spanName === 'dsh.turn')
+    const step = stored?.detail.spans.find(span => span.spanName === 'dsh.step')
+    const tool = stored?.detail.spans.find(span => span.spanName === 'tool.bash')
+    expect(turn).toMatchObject({ parentId: null, status: 'ok', agentName: 'dsh-test-agent' })
+    expect(step?.externalParentSpanId).toBe(turn?.externalSpanId)
+    expect(tool?.externalParentSpanId).toBe(step?.externalSpanId)
+    expect(new Set(stored?.detail.spans.map(span => span.externalSessionId))).toHaveLength(1)
+
+    const stepDetail = stored?.spans.find(span => span.spanName === 'dsh.step')
+    expect(stepDetail).toMatchObject({
+      inputTokens: 11,
+      outputTokens: 3,
+      cacheReadTokens: 2,
+      model: 'mock-model',
+      input: 'check this repository',
+      output: 'bash({"command":"pwd"})',
+    })
+    expect(stepDetail?.attrs).toMatchObject({
       'llm.provider': 'mock-provider',
       'llm.reasoning_tokens': 1,
     })
-
-    const toolEnd = events.find(event => event.event_type === 2 && event.span_id === tool?.span_id)
-    expect(toolEnd).toMatchObject({
-      status: 0,
-      tool_name: 'bash',
-      input_text: '{"command":"pwd"}',
-      output_text: '/tmp/project',
+    expect(stored?.spans.find(span => span.spanName === 'tool.bash')).toMatchObject({
+      toolName: 'bash',
+      input: '{"command":"pwd"}',
+      output: '/tmp/project',
     })
-    const turnEnd = events.find(event => event.event_type === 2 && event.span_id === turn?.span_id)
-    expect(turnEnd?.status).toBe(0)
-    expect(BigInt(turnEnd!.duration_ns!)).toBeGreaterThanOrEqual(0n)
-    expect(new Set(events.map(event => event.event_id)).size).toBe(events.length)
   })
 
-  it('fails loud on invalid transport and identity configuration', async () => {
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    await expect(ctx.plugin(DshTrace, {
-      exporter: { url: 'file:///tmp/traces' },
-    })).rejects.toThrow('exporter.url must be http(s)')
-    await expect(ctx.plugin(DshTrace, {
-      exporter: { url: 'http://127.0.0.1:7878/v1/ingest', tenantId: '-1' },
-    })).rejects.toThrow('exporter.tenantId must be an unsigned 64-bit integer')
-    await expect(ctx.plugin(DshTrace, {
-      exporter: { url: 'http://127.0.0.1:7878/v1/ingest' },
-      nodeId: 1024,
-    })).rejects.toThrow('nodeId must be an integer from 0 through 1023')
+  it('fails loud on invalid database and identity configuration', async () => {
+    async function expectInvalid(config: Config, message: string): Promise<void> {
+      const ctx = new Context()
+      await ctx.plugin(SessionStore)
+      try {
+        await expect(ctx.plugin(DshTrace, config)).rejects.toThrow(message)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    }
+
+    await expectInvalid({ database: { dataDir: '   ' } }, 'database.dataDir must not be empty')
+    await expectInvalid({ database: { dataDir: '/tmp/traces', tenantId: '-1' } }, 'database.tenantId must be an unsigned 64-bit integer')
+    await expectInvalid({ database: { dataDir: '/tmp/traces' }, nodeId: 1024 }, 'nodeId must be an integer from 0 through 1023')
   })
 
-  it('retries the SDK HTTP failure buffer at a natural flush before shutdown', async () => {
-    const { url, captures } = await mockYiTrace([503, 200])
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    const fiber = await ctx.plugin(DshTrace, {
-      exporter: { url },
-      batchSize: 1,
-    })
-    const session = ctx.sessions.create(SessionId('retry-session'), { meta: {} })
+  it('drains a natural flush and reopens the durable database after shutdown', async () => {
+    const dataDir = await traceDirectory()
+    const { ctx, fiber } = await loadTrace({ database: { dataDir }, batchSize: 64 })
+    const session = ctx.sessions.create(SessionId('flush-session'), { meta: {} })
     session.append('turn/start', { turn: 1 })
 
     ctx.telemetry.flush?.()
     await fiber.dispose()
 
-    expect(captures.length).toBeGreaterThanOrEqual(2)
-    const firstEventId = captures[0]?.events[0]?.event_id
-    expect(firstEventId).toBeDefined()
-    expect(captures.slice(1).some(capture => capture.events.some(event => event.event_id === firstEventId))).toBe(true)
+    const firstRead = await readTraces(dataDir)
+    const secondRead = await readTraces(dataDir)
+    expect(firstRead).toHaveLength(1)
+    expect(firstRead[0]?.summary.span_count).toBe(1)
+    expect(firstRead[0]?.summary.error_count).toBe(1)
+    expect(secondRead[0]?.summary.external_trace_id).toBe(firstRead[0]?.summary.external_trace_id)
   })
 
   it('recovers positioned error events into failed spans without an earlier lifecycle prefix', async () => {
-    const { url, captures } = await mockYiTrace()
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    const fiber = await ctx.plugin(DshTrace, {
-      exporter: { url },
-      batchSize: 2,
-    })
+    const dataDir = await traceDirectory()
+    const { ctx, fiber } = await loadTrace({ database: { dataDir }, batchSize: 2 })
 
     ctx.telemetry.emit({
       channel: 'ops',
@@ -229,28 +241,23 @@ describe('DshTrace wire', () => {
     })
     await fiber.dispose()
 
-    const events = flatten(captures)
-    const turn = events.find(event => event.event_type === 2
-      && event.attrs['dsh.turn'] === 2 && event.attrs['dsh.step'] === undefined)
-    const step = events.find(event => event.event_type === 2 && event.attrs['dsh.step'] === 3)
-    expect(turn).toMatchObject({ status: 1 })
-    expect(turn?.attrs['dsh.recovered_segment']).toBe(true)
-    expect(step).toMatchObject({ status: 1 })
-    expect(step?.attrs).toMatchObject({
-      'dsh.recovered_segment': true,
-      'error.name': 'ProviderFailure',
+    const [stored] = await readTraces(dataDir)
+    const turn = stored?.detail.spans.find(span => span.spanName === 'dsh.turn')
+    const step = stored?.detail.spans.find(span => span.spanName === 'dsh.step')
+    expect(turn).toMatchObject({ status: 'error', attrs: { 'dsh.recovered_segment': true } })
+    expect(step).toMatchObject({
+      status: 'error',
+      attrs: {
+        'dsh.recovered_segment': true,
+        'error.name': 'ProviderFailure',
+      },
     })
-    expect(events.flatMap(event => event.logs)).toContain(JSON.stringify({ message: 'provider unavailable' }))
+    expect(step?.logEvents.flatMap(event => event.messages)).toContain(JSON.stringify({ message: 'provider unavailable' }))
   })
 
   it('keeps concurrent sessions in separate yiTrace traces', async () => {
-    const { url, captures } = await mockYiTrace()
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    const fiber = await ctx.plugin(DshTrace, {
-      exporter: { url },
-      batchSize: 2,
-    })
+    const dataDir = await traceDirectory()
+    const { ctx, fiber } = await loadTrace({ database: { dataDir }, batchSize: 2 })
 
     const first = ctx.sessions.create(SessionId('parallel-session-a'), { meta: {} })
     const second = ctx.sessions.create(SessionId('parallel-session-b'), { meta: {} })
@@ -260,25 +267,18 @@ describe('DshTrace wire', () => {
     second.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await fiber.dispose()
 
-    const starts = flatten(captures).filter(event => event.event_type === 1 && event.span_name === 'dsh.turn')
-    const ends = flatten(captures).filter(event => event.event_type === 2
-      && starts.some(start => start.span_id === event.span_id))
-    expect(starts).toHaveLength(2)
-    expect(new Set(starts.map(event => event.trace_id)).size).toBe(2)
-    expect(new Set(starts.map(event => event.session_id)).size).toBe(2)
-    expect(new Set(ends.map(event => event.attrs['dsh.session.id']))).toEqual(
+    const traces = await readTraces(dataDir)
+    expect(traces).toHaveLength(2)
+    expect(new Set(traces.map(trace => trace.summary.external_trace_id)).size).toBe(2)
+    expect(new Set(traces.map(trace => trace.detail.spans[0]?.externalSessionId)).size).toBe(2)
+    expect(new Set(traces.map(trace => trace.detail.spans[0]?.attrs['dsh.session.id']))).toEqual(
       new Set(['parallel-session-a', 'parallel-session-b']),
     )
   })
 
   it('records a failed orphan tool result as a recovered error span', async () => {
-    const { url, captures } = await mockYiTrace()
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    const fiber = await ctx.plugin(DshTrace, {
-      exporter: { url },
-      batchSize: 2,
-    })
+    const dataDir = await traceDirectory()
+    const { ctx, fiber } = await loadTrace({ database: { dataDir }, batchSize: 2 })
 
     const session = ctx.sessions.create(SessionId('orphan-tool-session'), { meta: {} })
     const callId = CallId('missing-call')
@@ -298,20 +298,19 @@ describe('DshTrace wire', () => {
     session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await fiber.dispose()
 
-    const events = flatten(captures)
-    const toolStart = events.find(event => event.event_type === 1 && event.span_name === 'tool.unknown')
-    const toolEnd = events.find(event => event.event_type === 2 && event.span_id === toolStart?.span_id)
-    expect(toolStart?.parent_span_id).not.toBeNull()
-    expect(toolEnd).toMatchObject({
-      status: 1,
-      tool_name: 'unknown',
-      output_text: 'tool process exited unexpectedly',
+    const [stored] = await readTraces(dataDir)
+    const tool = stored?.spans.find(span => span.spanName === 'tool.unknown')
+    expect(tool?.externalParentSpanId).not.toBeNull()
+    expect(tool).toMatchObject({
+      toolName: 'unknown',
+      output: 'tool process exited unexpectedly',
+      attrs: {
+        'dsh.recovered_segment': true,
+        'dsh.tool.call_id': 'missing-call',
+        'error.name': 'SubprocessFailure',
+        'error.code': 'EXITED',
+      },
     })
-    expect(toolEnd?.attrs).toMatchObject({
-      'dsh.recovered_segment': true,
-      'dsh.tool.call_id': 'missing-call',
-      'error.name': 'SubprocessFailure',
-      'error.code': 'EXITED',
-    })
+    expect(stored?.detail.spans.find(span => span.spanName === 'tool.unknown')?.status).toBe('error')
   })
 })
