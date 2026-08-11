@@ -4,79 +4,112 @@
 
 `dsh-trace` 将 DeepSeek Harness 会话遥测存入本地嵌入式 yiTrace 数据库。它观察宿主 `telemetry/record` waterfall 处理后的记录，把每个 DSH 轮次投影为一条 yiTrace trace，并通过 yiTrace 的 Node-API 数据库写入 SDK 原生的开始、日志和结束事件。无需 HTTP 服务器、端口或 token。该插件需要主动启用，不会增加模型可见上下文，并独立于 DeepSeek Harness monorepo。
 
-## 存储内容
+## 功能
 
-- 每个 DSH 轮次对应一条根 trace。
-- 模型步骤和工具调用对应子 span，其中包含模型身份、token 用量、工具输入／输出和错误状态。
-- 遥测从活动轮次或步骤中途开始时，会添加恢复标记。
-- 持久化本地数据，可通过 `@yitrace/db` 重新打开，以执行 trace、span、搜索和聚合查询。
+- **嵌入式本地存储**：直接通过 `@yitrace/db` 写入；无需 HTTP 服务、端口或访问 token。
+- **agent（智能体）的完整 trace 树**：每个 DSH 轮次记录一条根 trace，其下是模型步骤 span，每个步骤下再记录工具调用 span。
+- **调试上下文**：保留模型身份、token 用量、消息和工具输入／输出、错误状态，以及轮次内的通用日志事件。
+- **生命周期恢复**：标记从轮次中途开始的 trace，将未完成 span 标记为失败并关闭，在自然边界 flush，并在数据库重新打开时恢复已提交数据。
+- **本地查询**：针对所配置目录提供 yiTrace trace、span、全文搜索和聚合 API。
 
 本插件不提供查看器或内置脱敏规则。请使用兼容 yiTrace 的本地工具或 `@yitrace/db` 查询 API 检查所配置数据目录中的内容。
+
+## 使用场景
+
+- 重建一个 agent 轮次，查看哪个模型步骤或工具调用导致失败。
+- 开发提示词或工作流时，对比 token 用量、模型输出和工具行为。
+- 搜索本地历史 trace，查找重复错误消息、工具结果或会话属性。
+- 不需要或不允许 HTTP 遥测服务时，将可观测性数据保留在同一台机器上。
 
 ## 前提与状态
 
 - Node.js `^22.19.0 || >=24.0.0` 和 pnpm `11.7.0`。
 - 一个可写的 yiTrace 本地数据目录。
-- 在 DSH 包尚未发布期间，需要拥有私有 `dsh2026/test-vibeinging` 仓库的读取权限。
+- 在 DSH 包尚未发布期间，需要拥有 DeepSeek Harness 源码包的访问权限。
 
-npm 包已经能够构建并通过包检查，但由于其 `@deepseek-ai/dsh-*` 对等依赖尚未发布，目前还不能从公共 registry 安装。源码开发时，请将 Harness 仓库和插件仓库放在同一目录下：
+npm 包已经能够构建并通过包检查，但由于其 `@deepseek-ai/dsh-*` 对等依赖尚未发布，目前还不能从公共 registry 安装。获得授权的源码开发要求本地工作区中提供这些包。
+
+## 快速上手
+
+下面步骤假设消费方 profile 已能使用 `@deepseek-ai/dsh-trace` 及其尚未发布的 DSH 对等依赖包。
+
+1. 选择一个绝对本地数据目录：
 
 ```sh
-git clone https://github.com/dsh2026/test-vibeinging.git
-git clone https://github.com/dsh-external/dsh-trace.git
-
-cd test-vibeinging
-pnpm install --frozen-lockfile
-pnpm run build
-
-cd ../dsh-trace
-pnpm install --frozen-lockfile
-pnpm run check
+export DSH_TRACE_DATA_DIR=/absolute/path/to/dsh-traces
+mkdir -p "$DSH_TRACE_DATA_DIR"
 ```
 
-## 运行配置
-
-以下示例假设消费方 profile 的 resolver manifest 中已经存在 `@deepseek-ai/dsh-trace`。如果敏感值不得写入磁盘，请先挂载宿主的遥测脱敏策略，再启用该插件。
-
-原始 Cordis 组合配置：
-
-```yaml
-- id: dsh-trace
-  name: '@deepseek-ai/dsh-trace'
-  config:
-    database:
-      dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: 1
-      maxBuffered: 4096
-    batchSize: 256
-    nodeId: 7
-    agentName: deepseek-harness
-    shutdownTimeoutMillis: 3000
-```
-
-消费方 profile 会添加该插件，并显式替换当前的遥测选择：
+2. 将插件添加到 profile，并禁用现有遥测后端。请先挂载所需的 `telemetry/record` 脱敏规则，再挂载 `dsh-trace`。
 
 ```yaml
 - id: telemetry-otel
   disabled: true
 
 - id: dsh-trace
-  disabled: false
+  name: '@deepseek-ai/dsh-trace'
   config:
     database:
       dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: !!js process.env.DSH_TRACE_TENANT_ID
+      tenantId: 1
 ```
 
-`database.dataDir` 是必填项。插件加载时，相对路径按进程工作目录解析；服务部署使用绝对路径更安全。`batchSize` 默认为 `256`；`database.maxBuffered` 默认为 16 个批次。`nodeId` 可选，且必须位于 `0..1023`；省略时，yiTrace SDK 会根据进程派生节点 id。并行写入方不得共用显式指定的节点 id。`agentName` 默认为 Harness 产品身份。`shutdownTimeoutMillis` 默认为 `3000`，只限制 DSH 等待关闭的时长；它无法取消已经在执行的原生数据库调用。数据目录为空、64 位无符号 tenant id 无效、节点 id 无效，或大小／截止时间不是正数，都会使插件在加载时失败。
+3. 正常运行 DSH。每个已完成轮次都会存入 `DSH_TRACE_DATA_DIR`；shutdown 还会关闭未完成的 span 并 flush 数据库。
+
+4. DSH 释放数据目录后，使用 `@yitrace/db` 检查 trace：
+
+```js
+import { YiTraceDB } from '@yitrace/db'
+
+const dataDir = process.env.DSH_TRACE_DATA_DIR
+if (!dataDir) throw new Error('DSH_TRACE_DATA_DIR is required')
+
+const tenantId = process.env.DSH_TRACE_TENANT_ID
+const database = await YiTraceDB.open({
+  dataDir,
+  ...(tenantId ? { tenantId } : {}),
+})
+
+try {
+  const traces = await database.traces()
+  console.dir(traces, { depth: null })
+
+  const first = traces[0]
+  const traceId = first?.externalTraceId
+    ?? first?.external_trace_id
+    ?? first?.traceId
+    ?? first?.trace_id
+  if (traceId !== undefined) {
+    console.dir(await database.trace(traceId), { depth: null })
+  }
+
+  console.dir(await database.search({ text: 'tool process exited' }), { depth: null })
+} finally {
+  await database.close()
+}
+```
+
+写入和读取必须使用相同的 `tenantId`。示例 profile 写入 tenant `1`；运行查询脚本前，请设置 `DSH_TRACE_TENANT_ID=1`。
+
+## 配置参考
+
+| 字段 | 必填项或默认值 | 用途 |
+|---|---|---|
+| `database.dataDir` | 必填 | 本地 yiTrace 目录。插件加载时，相对路径从进程工作目录解析；服务部署请使用绝对路径。 |
+| `database.tenantId` | 可选 | 写入时附加的 64 位无符号 tenant 作用域。查询时使用相同值。 |
+| `database.maxBuffered` | `batchSize × 16` | 嵌入式 ingest 失败后保留在内存中的最大事件数；超过限制后丢弃最旧事件。 |
+| `batchSize` | `256` | 每次串行嵌入式 ingest 前收集的事件数。 |
+| `nodeId` | 由 yiTrace 派生 | `0..1023` 范围内的 Snowflake 节点 id。并行写入方不得共用显式值。 |
+| `agentName` | Harness 产品身份 | 附加到每个 span 的 agent 名称。 |
+| `shutdownTimeoutMillis` | `3000` | DSH 等待关闭的最长时间。截止时间无法取消正在执行的原生数据库调用。 |
+
+数据目录为空、64 位无符号 tenant id 无效、节点 id 无效，或大小／截止时间不是正数，都会使插件在加载时失败。
 
 遥测 seam 在每个 Cordis 上下文中只允许一个后端。同时加载本包与 `session-telemetry-otel` 时，会因服务重复而失败，不会重复记录。宿主级隐私开关必须禁用每一条已配置的遥测项；该插件不会绕过这项宿主策略。
 
 ## 验证与 CI
 
-`pnpm-workspace.yaml` 从相邻的 `../test-vibeinging` 检出链接开发依赖。包元数据保留普通的版本化对等依赖（peer dependency）和开发依赖；本地路径不会进入打包产物。
-
-`pnpm run check` 会运行源码 lint、严格类型检查、针对真实嵌入式数据库和真实 YAML Loader profile 的 7 个测试、生产构建、`publint` 和纯 Node 导入 smoke。测试会关闭并重新打开 yiTrace 数据，覆盖持久的轮次／步骤／工具映射、flush 与 shutdown、错误恢复、会话隔离、配置校验、失败工具恢复和 profile 级脱敏。CI 通过检出私有 `dsh2026/test-vibeinging` 仓库复现 sibling 布局，因此需要名为 `DSH_REPOSITORY_TOKEN` 的仓库 secret。
+`pnpm run check` 会运行源码 lint、严格类型检查、针对真实嵌入式数据库和真实 YAML Loader profile 的 7 个测试、生产构建、`publint` 和纯 Node 导入 smoke。测试会关闭并重新打开 yiTrace 数据，覆盖持久的轮次／步骤／工具映射、flush 与 shutdown、错误恢复、会话隔离、配置校验、失败工具恢复和 profile 级脱敏。CI 会从由 `DSH_REPOSITORY` 和 `DSH_REPOSITORY_TOKEN` secrets 配置的仓库获取尚未发布的 DSH 包。
 
 ## Trace 映射
 
@@ -107,7 +140,7 @@ pnpm run check
 
 ## 已知限制与延期工作
 
-- **DSH 对等依赖尚未公开**：本包已可打包，但在 `@deepseek-ai/dsh-*` 对等依赖发布之前，仍无法从公共 registry 干净安装。本地开发和 CI 暂时使用 sibling 检出。
+- **DSH 对等依赖尚未公开**：本包已可打包，但在 `@deepseek-ai/dsh-*` 对等依赖发布之前，仍无法从公共 registry 干净安装。获得授权的源码构建通过配置的 DSH 源码工作区提供这些包。
 - **数据库是原生依赖**：`@yitrace/db` 目前为 macOS arm64／x64、glibc Linux arm64／x64 和 Windows x64 提供预构建包。本包当前的 lockfile 不覆盖其他操作系统、CPU 目标和 musl Linux。
 - **只有一种本地存储模式**：该插件刻意不提供 HTTP 后端或跨机器传输。并发运行的 DSH 进程应使用各自独立的可写数据目录，除非 yiTrace 数据库已为该部署明确记录共享写入方配置。
 - **遥测重载会分隔状态**：资源释放会将已打开的 span 标记为失败并关闭，同时重置适配器的消息累积器。后续带位置的事件（`turn`/`step`）会打开一个标记为 `dsh.recovered_segment` 的 span；其输入只包含该后端实例加载后观察到的已脱敏消息事件。单独一条 `user/message` 的 payload 中没有位置信息，无法自行重建缺失的步骤。

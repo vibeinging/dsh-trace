@@ -2,15 +2,15 @@ packages:
   - .
 
 overrides:
-  '@cordisjs/plugin-include': link:../test-vibeinging/vendor/include
-  '@cordisjs/plugin-loader': link:../test-vibeinging/vendor/loader
-  '@deepseek-ai/dsh-agent': link:../test-vibeinging/packages/core/agent
-  '@deepseek-ai/dsh-brand': link:../test-vibeinging/packages/util/brand
-  '@deepseek-ai/dsh-invariants': link:../test-vibeinging/packages/support/invariants
-  '@deepseek-ai/dsh-llm': link:../test-vibeinging/packages/llm/llm
-  '@deepseek-ai/dsh-scope': link:../test-vibeinging/packages/core/scope
-  '@deepseek-ai/dsh-session': link:../test-vibeinging/packages/core/session
-  '@deepseek-ai/dsh-session-telemetry': link:../test-vibeinging/packages/telemetry/session-telemetry
-  '@deepseek-ai/dsh-system-prompt': link:../test-vibeinging/packages/core/system-prompt
-  '@deepseek-ai/dsh-timeout': link:../test-vibeinging/packages/util/timeout
-  cordis: link:../test-vibeinging/vendor/cordis
+  '@cordisjs/plugin-include': link:../deepseek-harness/vendor/include
+  '@cordisjs/plugin-loader': link:../deepseek-harness/vendor/loader
+  '@deepseek-ai/dsh-agent': link:../deepseek-harness/packages/core/agent
+  '@deepseek-ai/dsh-brand': link:../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-invariants': link:../deepseek-harness/packages/support/invariants
+  '@deepseek-ai/dsh-llm': link:../deepseek-harness/packages/llm/llm
+  '@deepseek-ai/dsh-scope': link:../deepseek-harness/packages/core/scope
+  '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
+  '@deepseek-ai/dsh-session-telemetry': link:../deepseek-harness/packages/telemetry/session-telemetry
+  '@deepseek-ai/dsh-system-prompt': link:../deepseek-harness/packages/core/system-prompt
+  '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout
+  cordis: link:../deepseek-harness/vendor/cordis

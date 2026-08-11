@@ -5,35 +5,35 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@cordisjs/plugin-include': link:../test-vibeinging/vendor/include
-  '@cordisjs/plugin-loader': link:../test-vibeinging/vendor/loader
-  '@deepseek-ai/dsh-agent': link:../test-vibeinging/packages/core/agent
-  '@deepseek-ai/dsh-brand': link:../test-vibeinging/packages/util/brand
-  '@deepseek-ai/dsh-invariants': link:../test-vibeinging/packages/support/invariants
-  '@deepseek-ai/dsh-llm': link:../test-vibeinging/packages/llm/llm
-  '@deepseek-ai/dsh-scope': link:../test-vibeinging/packages/core/scope
-  '@deepseek-ai/dsh-session': link:../test-vibeinging/packages/core/session
-  '@deepseek-ai/dsh-session-telemetry': link:../test-vibeinging/packages/telemetry/session-telemetry
-  '@deepseek-ai/dsh-system-prompt': link:../test-vibeinging/packages/core/system-prompt
-  '@deepseek-ai/dsh-timeout': link:../test-vibeinging/packages/util/timeout
-  cordis: link:../test-vibeinging/vendor/cordis
+  '@cordisjs/plugin-include': link:../deepseek-harness/vendor/include
+  '@cordisjs/plugin-loader': link:../deepseek-harness/vendor/loader
+  '@deepseek-ai/dsh-agent': link:../deepseek-harness/packages/core/agent
+  '@deepseek-ai/dsh-brand': link:../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-invariants': link:../deepseek-harness/packages/support/invariants
+  '@deepseek-ai/dsh-llm': link:../deepseek-harness/packages/llm/llm
+  '@deepseek-ai/dsh-scope': link:../deepseek-harness/packages/core/scope
+  '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
+  '@deepseek-ai/dsh-session-telemetry': link:../deepseek-harness/packages/telemetry/session-telemetry
+  '@deepseek-ai/dsh-system-prompt': link:../deepseek-harness/packages/core/system-prompt
+  '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout
+  cordis: link:../deepseek-harness/vendor/cordis
 
 importers:
 
   .:
     dependencies:
       '@deepseek-ai/dsh-invariants':
-        specifier: link:../test-vibeinging/packages/support/invariants
-        version: link:../test-vibeinging/packages/support/invariants
+        specifier: link:../deepseek-harness/packages/support/invariants
+        version: link:../deepseek-harness/packages/support/invariants
       '@deepseek-ai/dsh-llm':
-        specifier: link:../test-vibeinging/packages/llm/llm
-        version: link:../test-vibeinging/packages/llm/llm
+        specifier: link:../deepseek-harness/packages/llm/llm
+        version: link:../deepseek-harness/packages/llm/llm
       '@deepseek-ai/dsh-session':
-        specifier: link:../test-vibeinging/packages/core/session
-        version: link:../test-vibeinging/packages/core/session
+        specifier: link:../deepseek-harness/packages/core/session
+        version: link:../deepseek-harness/packages/core/session
       '@deepseek-ai/dsh-session-telemetry':
-        specifier: link:../test-vibeinging/packages/telemetry/session-telemetry
-        version: link:../test-vibeinging/packages/telemetry/session-telemetry
+        specifier: link:../deepseek-harness/packages/telemetry/session-telemetry
+        version: link:../deepseek-harness/packages/telemetry/session-telemetry
       '@yitrace/db':
         specifier: ^0.1.8
         version: 0.1.8
@@ -41,33 +41,33 @@ importers:
         specifier: ^0.1.8
         version: 0.1.8
       cordis:
-        specifier: link:../test-vibeinging/vendor/cordis
-        version: link:../test-vibeinging/vendor/cordis
+        specifier: link:../deepseek-harness/vendor/cordis
+        version: link:../deepseek-harness/vendor/cordis
       schemastery:
         specifier: ^3.18.0
         version: 3.18.0
     devDependencies:
       '@cordisjs/plugin-include':
-        specifier: link:../test-vibeinging/vendor/include
-        version: link:../test-vibeinging/vendor/include
+        specifier: link:../deepseek-harness/vendor/include
+        version: link:../deepseek-harness/vendor/include
       '@cordisjs/plugin-loader':
-        specifier: link:../test-vibeinging/vendor/loader
-        version: link:../test-vibeinging/vendor/loader
+        specifier: link:../deepseek-harness/vendor/loader
+        version: link:../deepseek-harness/vendor/loader
       '@deepseek-ai/dsh-agent':
-        specifier: link:../test-vibeinging/packages/core/agent
-        version: link:../test-vibeinging/packages/core/agent
+        specifier: link:../deepseek-harness/packages/core/agent
+        version: link:../deepseek-harness/packages/core/agent
       '@deepseek-ai/dsh-brand':
-        specifier: link:../test-vibeinging/packages/util/brand
-        version: link:../test-vibeinging/packages/util/brand
+        specifier: link:../deepseek-harness/packages/util/brand
+        version: link:../deepseek-harness/packages/util/brand
       '@deepseek-ai/dsh-scope':
-        specifier: link:../test-vibeinging/packages/core/scope
-        version: link:../test-vibeinging/packages/core/scope
+        specifier: link:../deepseek-harness/packages/core/scope
+        version: link:../deepseek-harness/packages/core/scope
       '@deepseek-ai/dsh-system-prompt':
-        specifier: link:../test-vibeinging/packages/core/system-prompt
-        version: link:../test-vibeinging/packages/core/system-prompt
+        specifier: link:../deepseek-harness/packages/core/system-prompt
+        version: link:../deepseek-harness/packages/core/system-prompt
       '@deepseek-ai/dsh-timeout':
-        specifier: link:../test-vibeinging/packages/util/timeout
-        version: link:../test-vibeinging/packages/util/timeout
+        specifier: link:../deepseek-harness/packages/util/timeout
+        version: link:../deepseek-harness/packages/util/timeout
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
