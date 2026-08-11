@@ -4,79 +4,112 @@ English | [中文](README.zh.md)
 
 `dsh-trace` stores DeepSeek Harness session telemetry in a local embedded yiTrace database. It observes records after the host's `telemetry/record` waterfall, projects each DSH turn into one yiTrace trace, and writes SDK-native start, log, and end events through yiTrace's Node-API database. No HTTP server, port, or token is required. The plugin is opt-in, adds no model-visible context, and lives outside the DeepSeek Harness monorepo.
 
-## What it stores
+## Features
 
-- One root trace for each DSH turn.
-- Child spans for model steps and tool calls, including model identity, token usage, tool input/output, and error state.
-- Recovery markers when telemetry begins in the middle of an active turn or step.
-- Durable local data that can be reopened through `@yitrace/db` for trace, span, search, and aggregate queries.
+- **Embedded local storage** — writes directly through `@yitrace/db`; no HTTP service, port, or access token.
+- **Complete agent trace tree** — records one root trace per DSH turn, model-step spans below it, and tool-call spans below each step.
+- **Debugging context** — keeps model identity, token usage, message and tool input/output, error state, and generic in-turn log events.
+- **Lifecycle recovery** — marks traces that begin mid-turn, closes unfinished spans as failed, flushes on natural boundaries, and recovers committed data when the database reopens.
+- **Local queries** — supports yiTrace trace, span, full-text search, and aggregate APIs against the configured directory.
 
 The plugin does not provide a viewer or built-in redaction rules. Use yiTrace-compatible local tools or the `@yitrace/db` query API to inspect the configured data directory.
+
+## Use cases
+
+- Reconstruct an agent turn to see which model step or tool call caused a failure.
+- Compare token use, model output, and tool behavior while developing prompts or workflows.
+- Search historical local traces for repeated error messages, tool results, or session attributes.
+- Keep observability data on the same machine when an HTTP telemetry service is unnecessary or not allowed.
 
 ## Prerequisites and status
 
 - Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0`.
 - A writable local directory for yiTrace data.
-- Read access to the private `dsh2026/test-vibeinging` repository while DSH packages remain unpublished.
+- Access to the DeepSeek Harness source packages while they remain unpublished.
 
-The npm package is buildable and passes package checks, but it is not yet installable from the public registry because its `@deepseek-ai/dsh-*` peer packages are unpublished. For source development, keep the Harness and plugin repositories as siblings:
+The npm package is buildable and passes package checks, but it is not yet installable from the public registry because its `@deepseek-ai/dsh-*` peer packages are unpublished. Authorized source development requires those packages to be available in the local workspace.
+
+## Quick start
+
+The steps below assume `@deepseek-ai/dsh-trace` and its unpublished DSH peer packages are already available to the consuming profile.
+
+1. Choose an absolute local data directory:
 
 ```sh
-git clone https://github.com/dsh2026/test-vibeinging.git
-git clone https://github.com/dsh-external/dsh-trace.git
-
-cd test-vibeinging
-pnpm install --frozen-lockfile
-pnpm run build
-
-cd ../dsh-trace
-pnpm install --frozen-lockfile
-pnpm run check
+export DSH_TRACE_DATA_DIR=/absolute/path/to/dsh-traces
+mkdir -p "$DSH_TRACE_DATA_DIR"
 ```
 
-## Runtime configuration
-
-The examples below assume `@deepseek-ai/dsh-trace` is already present in the consuming profile's resolver manifest. Mount the host's telemetry redaction policy before enabling the plugin if sensitive values must not be written to disk.
-
-Raw Cordis composition:
-
-```yaml
-- id: dsh-trace
-  name: '@deepseek-ai/dsh-trace'
-  config:
-    database:
-      dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: 1
-      maxBuffered: 4096
-    batchSize: 256
-    nodeId: 7
-    agentName: deepseek-harness
-    shutdownTimeoutMillis: 3000
-```
-
-A consuming profile adds the plugin and replaces its current telemetry choice explicitly:
+2. Add the plugin to the profile and disable the existing telemetry backend. Mount any required `telemetry/record` redaction rule before `dsh-trace`.
 
 ```yaml
 - id: telemetry-otel
   disabled: true
 
 - id: dsh-trace
-  disabled: false
+  name: '@deepseek-ai/dsh-trace'
   config:
     database:
       dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: !!js process.env.DSH_TRACE_TENANT_ID
+      tenantId: 1
 ```
 
-`database.dataDir` is required. Relative paths resolve from the process working directory when the plugin loads; an absolute path is safer for service deployments. `batchSize` defaults to `256`; `database.maxBuffered` defaults to sixteen batches. `nodeId` is optional and must be in `0..1023`; omit it to let the yiTrace SDK derive the node id from the process. Parallel writers must not share an explicit node id. `agentName` defaults to the Harness product identity. `shutdownTimeoutMillis` defaults to `3000` and bounds only how long DSH awaits shutdown; it cannot cancel a native database call already in progress. An empty data directory, invalid unsigned 64-bit tenant id, invalid node id, or non-positive size/deadline fails at plugin load.
+3. Run DSH normally. Each completed turn is stored under `DSH_TRACE_DATA_DIR`; shutdown also closes unfinished spans and flushes the database.
+
+4. After DSH releases the data directory, inspect traces with `@yitrace/db`:
+
+```js
+import { YiTraceDB } from '@yitrace/db'
+
+const dataDir = process.env.DSH_TRACE_DATA_DIR
+if (!dataDir) throw new Error('DSH_TRACE_DATA_DIR is required')
+
+const tenantId = process.env.DSH_TRACE_TENANT_ID
+const database = await YiTraceDB.open({
+  dataDir,
+  ...(tenantId ? { tenantId } : {}),
+})
+
+try {
+  const traces = await database.traces()
+  console.dir(traces, { depth: null })
+
+  const first = traces[0]
+  const traceId = first?.externalTraceId
+    ?? first?.external_trace_id
+    ?? first?.traceId
+    ?? first?.trace_id
+  if (traceId !== undefined) {
+    console.dir(await database.trace(traceId), { depth: null })
+  }
+
+  console.dir(await database.search({ text: 'tool process exited' }), { depth: null })
+} finally {
+  await database.close()
+}
+```
+
+Use the same `tenantId` for writing and reading. The example profile writes tenant `1`; set `DSH_TRACE_TENANT_ID=1` before running the query script.
+
+## Configuration reference
+
+| Field | Required or default | Purpose |
+|---|---|---|
+| `database.dataDir` | Required | Local yiTrace directory. Relative paths resolve from the process working directory at plugin load; use an absolute path for service deployments. |
+| `database.tenantId` | Optional | Unsigned 64-bit tenant scope attached to writes. Use the same value when querying. |
+| `database.maxBuffered` | `batchSize × 16` | Maximum events retained in memory after embedded ingest failures; the oldest events are dropped after the limit. |
+| `batchSize` | `256` | Events collected before one serialized embedded ingest. |
+| `nodeId` | Derived by yiTrace | Snowflake node id in `0..1023`. Parallel writers must not share an explicit value. |
+| `agentName` | Harness product identity | Agent name attached to every span. |
+| `shutdownTimeoutMillis` | `3000` | Maximum time DSH awaits shutdown. The deadline cannot cancel a native database call already in progress. |
+
+An empty data directory, invalid unsigned 64-bit tenant id, invalid node id, or non-positive size/deadline fails at plugin load.
 
 The telemetry seam admits one backend per Cordis context. Loading this package together with `session-telemetry-otel` fails as a duplicate service instead of recording twice. A host-level privacy switch must disable every configured telemetry row; the plugin does not bypass that host policy.
 
 ## Verification and CI
 
-`pnpm-workspace.yaml` links development dependencies from the sibling `../test-vibeinging` checkout. Package metadata keeps ordinary versioned peer and development dependencies; local paths stay outside the packed artifact.
-
-`pnpm run check` runs source linting, strict type checking, seven tests against a real embedded database and a real YAML Loader profile, the production build, `publint`, and plain-Node import smokes. The tests close and reopen yiTrace data to cover durable turn/step/tool mapping, flush and shutdown, error recovery, session isolation, configuration validation, failed tool recovery, and profile-level redaction. CI reproduces the sibling layout by checking out the private `dsh2026/test-vibeinging` repository and therefore requires a repository secret named `DSH_REPOSITORY_TOKEN`.
+`pnpm run check` runs source linting, strict type checking, seven tests against a real embedded database and a real YAML Loader profile, the production build, `publint`, and plain-Node import smokes. The tests close and reopen yiTrace data to cover durable turn/step/tool mapping, flush and shutdown, error recovery, session isolation, configuration validation, failed tool recovery, and profile-level redaction. CI obtains the unpublished DSH packages from the repository configured by the `DSH_REPOSITORY` and `DSH_REPOSITORY_TOKEN` secrets.
 
 ## Trace mapping
 
@@ -107,7 +140,7 @@ None; this package neither assembles nor sends provider requests.
 
 ## Known Limitations and Deferred Work
 
-- **DSH peers are not public yet** — the package is ready to pack, but a clean public-registry install remains blocked until the `@deepseek-ai/dsh-*` peer packages are published. Local development and CI use the sibling checkout instead.
+- **DSH peers are not public yet** — the package is ready to pack, but a clean public-registry install remains blocked until the `@deepseek-ai/dsh-*` peer packages are published. Authorized source builds provide these packages through the configured DSH source workspace.
 - **The database is a native dependency** — `@yitrace/db` currently supplies prebuilt packages for macOS arm64/x64, glibc Linux arm64/x64, and Windows x64. Other operating systems, CPU targets, and musl Linux are not covered by this package's current lockfile.
 - **One local storage mode** — the plugin deliberately has no HTTP backend or cross-machine transport. Give concurrently running DSH processes separate writable data directories unless the yiTrace database documents a shared-writer setup for that deployment.
 - **State is segmented across telemetry reloads** — disposal closes open spans as failed and resets the adapter's message accumulator. A later positioned event (`turn`/`step`) opens a span marked `dsh.recovered_segment`; its input includes only redacted message events observed after that backend instance loaded. A lone `user/message` has no position in its payload and cannot reconstruct a missing step by itself.

@@ -19,19 +19,24 @@ jobs:
 
       - name: Require access to the private DSH repository
         env:
+          DSH_REPOSITORY: ${{ secrets.DSH_REPOSITORY }}
           DSH_REPOSITORY_TOKEN: ${{ secrets.DSH_REPOSITORY_TOKEN }}
         run: |
+          if [ -z "$DSH_REPOSITORY" ]; then
+            echo "::error::Set DSH_REPOSITORY to the owner/name of the private DSH repository."
+            exit 1
+          fi
           if [ -z "$DSH_REPOSITORY_TOKEN" ]; then
-            echo "::error::Set DSH_REPOSITORY_TOKEN to a token that can read dsh2026/test-vibeinging."
+            echo "::error::Set DSH_REPOSITORY_TOKEN to a token that can read DSH_REPOSITORY."
             exit 1
           fi
 
       - name: Check out DeepSeek Harness
         uses: actions/checkout@v4
         with:
-          repository: dsh2026/test-vibeinging
+          repository: ${{ secrets.DSH_REPOSITORY }}
           token: ${{ secrets.DSH_REPOSITORY_TOKEN }}
-          path: test-vibeinging
+          path: deepseek-harness
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -42,7 +47,7 @@ jobs:
         run: npm install --global pnpm@11.7.0
 
       - name: Install and build DeepSeek Harness
-        working-directory: test-vibeinging
+        working-directory: deepseek-harness
         run: |
           pnpm install --frozen-lockfile --ignore-scripts
           pnpm run build
