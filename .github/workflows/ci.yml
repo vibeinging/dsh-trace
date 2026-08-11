@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dsh-trace
+        uses: actions/checkout@v4
+        with:
+          path: dsh-trace
+
+      - name: Require access to the private DSH repository
+        env:
+          DSH_REPOSITORY_TOKEN: ${{ secrets.DSH_REPOSITORY_TOKEN }}
+        run: |
+          if [ -z "$DSH_REPOSITORY_TOKEN" ]; then
+            echo "::error::Set DSH_REPOSITORY_TOKEN to a token that can read dsh2026/test-vibeinging."
+            exit 1
+          fi
+
+      - name: Check out DeepSeek Harness
+        uses: actions/checkout@v4
+        with:
+          repository: dsh2026/test-vibeinging
+          token: ${{ secrets.DSH_REPOSITORY_TOKEN }}
+          path: test-vibeinging
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        run: npm install --global pnpm@11.7.0
+
+      - name: Install and build DeepSeek Harness
+        working-directory: test-vibeinging
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run build
+
+      - name: Install dsh-trace
+        working-directory: dsh-trace
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify dsh-trace
+        working-directory: dsh-trace
+        run: pnpm run check
