@@ -1,0 +1,14 @@
+# Replace the shipped network telemetry backend with local embedded yiTrace.
+- id: telemetry-otel
+  disabled: true
+
+- insert:
+    - id: dsh-trace
+      name: '@deepseek-ai/dsh-trace'
+      config:
+        database:
+          dataDir: !!js process.env.DSH_TRACE_DATA_DIR
+          tenantId: !!js process.env.DSH_TRACE_TENANT_ID
+
+    - id: dsh-trace-invariant
+      name: '@deepseek-ai/dsh-trace/invariant'

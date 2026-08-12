@@ -21,40 +21,43 @@ The plugin does not provide a viewer or built-in redaction rules. Use yiTrace-co
 - Search historical local traces for repeated error messages, tool results, or session attributes.
 - Keep observability data on the same machine when an HTTP telemetry service is unnecessary or not allowed.
 
-## Prerequisites and status
+## Prerequisites
 
 - Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0`.
 - A writable local directory for yiTrace data.
-- Access to the DeepSeek Harness source packages while they remain unpublished.
+- Git credentials with read access to the private plugin repository.
+- A compatible DSH `web` or `headless` profile that provides Session Telemetry and the invariant service.
 
-The npm package is buildable and passes package checks, but it is not yet installable from the public registry because its `@deepseek-ai/dsh-*` peer packages are unpublished. Authorized source development requires those packages to be available in the local workspace.
+The package is private and is not published to an npm registry. Its checked-in `lib/` runtime allows a pinned private GitHub commit to install without executing a dependency build against private DSH SDK packages. The install command must include `-w` because a DSH profile is a pnpm workspace root.
 
 ## Quick start
 
-The steps below assume `@deepseek-ai/dsh-trace` and its unpublished DSH peer packages are already available to the consuming profile.
+The bundle disables the shipped OTLP telemetry backend and replaces it with local embedded yiTrace. It can store user and assistant text, reasoning, tool arguments and results, session ids, and configured identities. Do not boot the profile until its local retention and redaction policy is acceptable.
 
 1. Choose an absolute local data directory:
 
 ```sh
 export DSH_TRACE_DATA_DIR=/absolute/path/to/dsh-traces
+export DSH_TRACE_TENANT_ID=1
 mkdir -p "$DSH_TRACE_DATA_DIR"
 ```
 
-2. Add the plugin to the profile and disable the existing telemetry backend. Mount any required `telemetry/record` redaction rule before `dsh-trace`.
+2. Install a reviewed commit directly from the private GitHub repository:
 
-```yaml
-- id: telemetry-otel
-  disabled: true
-
-- id: dsh-trace
-  name: '@deepseek-ai/dsh-trace'
-  config:
-    database:
-      dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: 1
+```sh
+dsh plugin --profile web add -w github:dsh-external/dsh-trace#<reviewed-commit>
 ```
 
-3. Run DSH normally. Each completed turn is stored under `DSH_TRACE_DATA_DIR`; shutdown also closes unfinished spans and flushes the database.
+The package's `dsh.bundle.patch` disables `telemetry-otel`, loads `dsh-trace` from `DSH_TRACE_DATA_DIR`, and loads its invariant companion. Use the same command with `--profile headless` to enable that independent profile.
+
+3. Inspect the composed profile before booting it, then start DSH:
+
+```sh
+dsh --profile web --dump-config
+dsh --profile web
+```
+
+The dump must show `telemetry-otel` as disabled and include `dsh-trace` plus `dsh-trace-invariant`. Each completed turn is stored under `DSH_TRACE_DATA_DIR`; shutdown also closes unfinished spans and flushes the database. Remove the bundle with `dsh plugin --profile web remove -w @deepseek-ai/dsh-trace`.
 
 4. After DSH releases the data directory, inspect traces with `@yitrace/db`:
 
@@ -109,7 +112,7 @@ The telemetry seam admits one backend per Cordis context. Loading this package t
 
 ## Verification and CI
 
-`pnpm run check` runs source linting, strict type checking, seven tests against a real embedded database and a real YAML Loader profile, the production build, `publint`, and plain-Node import smokes. The tests close and reopen yiTrace data to cover durable turn/step/tool mapping, flush and shutdown, error recovery, session isolation, configuration validation, failed tool recovery, and profile-level redaction. CI obtains the unpublished DSH packages from the repository configured by the `DSH_REPOSITORY` and `DSH_REPOSITORY_TOKEN` secrets.
+The project `.npmrc` selects the private `@deepseek-ai/*` scope; pnpm 11 reads its `${NPM_TOKEN}` authentication mapping from the trusted user-level `~/.npmrc`. Set `NPM_TOKEN` and run `pnpm install --ignore-scripts`. The SDK packages are pinned to the reviewed `0.0.1-rc.2` set. Do not link or check out DSH source into this repository. `pnpm run check` enforces the repository boundary, runs source linting and strict type checking, executes seven tests against a real embedded database and a real YAML Loader profile, builds the production entries, runs `publint` without creating a tarball, and imports the built entries with plain Node. CI maps the `NPM_TOKEN` secret into setup-node's trusted user configuration.
 
 ## Trace mapping
 
@@ -140,7 +143,7 @@ None; this package neither assembles nor sends provider requests.
 
 ## Known Limitations and Deferred Work
 
-- **DSH peers are not public yet** — the package is ready to pack, but a clean public-registry install remains blocked until the `@deepseek-ai/dsh-*` peer packages are published. Authorized source builds provide these packages through the configured DSH source workspace.
+- **Private Git distribution** — the package is not published to a registry. Installation requires authorized GitHub access, pnpm `11.7.0`, a reviewed commit, and a compatible DSH profile.
 - **The database is a native dependency** — `@yitrace/db` currently supplies prebuilt packages for macOS arm64/x64, glibc Linux arm64/x64, and Windows x64. Other operating systems, CPU targets, and musl Linux are not covered by this package's current lockfile.
 - **One local storage mode** — the plugin deliberately has no HTTP backend or cross-machine transport. Give concurrently running DSH processes separate writable data directories unless the yiTrace database documents a shared-writer setup for that deployment.
 - **State is segmented across telemetry reloads** — disposal closes open spans as failed and resets the adapter's message accumulator. A later positioned event (`turn`/`step`) opens a span marked `dsh.recovered_segment`; its input includes only redacted message events observed after that backend instance loaded. A lone `user/message` has no position in its payload and cannot reconstruct a missing step by itself.

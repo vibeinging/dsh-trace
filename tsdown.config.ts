@@ -16,8 +16,8 @@ export default defineConfig({
     neverBundle: [
       /^@deepseek-ai\//,
       '@yitrace/trace-sdk',
-      'cordis',
-      'schemastery',
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/schemastery',
     ],
   },
 })

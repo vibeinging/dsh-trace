@@ -14,48 +14,30 @@ jobs:
     steps:
       - name: Check out dsh-trace
         uses: actions/checkout@v4
-        with:
-          path: dsh-trace
-
-      - name: Require access to the private DSH repository
-        env:
-          DSH_REPOSITORY: ${{ secrets.DSH_REPOSITORY }}
-          DSH_REPOSITORY_TOKEN: ${{ secrets.DSH_REPOSITORY_TOKEN }}
-        run: |
-          if [ -z "$DSH_REPOSITORY" ]; then
-            echo "::error::Set DSH_REPOSITORY to the owner/name of the private DSH repository."
-            exit 1
-          fi
-          if [ -z "$DSH_REPOSITORY_TOKEN" ]; then
-            echo "::error::Set DSH_REPOSITORY_TOKEN to a token that can read DSH_REPOSITORY."
-            exit 1
-          fi
-
-      - name: Check out DeepSeek Harness
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ secrets.DSH_REPOSITORY }}
-          token: ${{ secrets.DSH_REPOSITORY_TOKEN }}
-          path: deepseek-harness
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: '@deepseek-ai'
 
       - name: Install pnpm
         run: npm install --global pnpm@11.7.0
 
-      - name: Install and build DeepSeek Harness
-        working-directory: deepseek-harness
+      - name: Require private SDK access
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          pnpm install --frozen-lockfile --ignore-scripts
-          pnpm run build
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::Set NPM_TOKEN to a token that can read the private @deepseek-ai SDK packages."
+            exit 1
+          fi
 
       - name: Install dsh-trace
-        working-directory: dsh-trace
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
 
       - name: Verify dsh-trace
-        working-directory: dsh-trace
         run: pnpm run check

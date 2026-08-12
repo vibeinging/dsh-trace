@@ -9,9 +9,9 @@
  * @module @deepseek-ai/dsh-trace
  */
 
-import z from 'schemastery'
+import z from '@deepseek-ai/schemastery'
 import { resolve } from 'node:path'
-import { Service, type Context } from 'cordis'
+import { Service, type Context } from '@deepseek-ai/cordis'
 import { APP_IDENTITY, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEventMap, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { Telemetry, TelemetryCoordinator, type TelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
@@ -432,6 +432,9 @@ class OpenSpan {
 export class DshTrace extends Telemetry {
   static inject = ['sessions']
   static Config = Config
+
+  /** Embedded traces stay on this machine and are never shared by this backend. */
+  override readonly sharing = 'disabled' as const
 
   private readonly ids: Snowflake
   private readonly sessions = new Map<string, SessionState>()

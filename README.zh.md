@@ -21,40 +21,43 @@
 - 搜索本地历史 trace，查找重复错误消息、工具结果或会话属性。
 - 不需要或不允许 HTTP 遥测服务时，将可观测性数据保留在同一台机器上。
 
-## 前提与状态
+## 前提
 
 - Node.js `^22.19.0 || >=24.0.0` 和 pnpm `11.7.0`。
 - 一个可写的 yiTrace 本地数据目录。
-- 在 DSH 包尚未发布期间，需要拥有 DeepSeek Harness 源码包的访问权限。
+- 可读取私有插件仓库的 Git 凭据。
+- 提供 Session Telemetry 和 invariant service 的兼容 DSH `web` 或 `headless` profile。
 
-npm 包已经能够构建并通过包检查，但由于其 `@deepseek-ai/dsh-*` 对等依赖尚未发布，目前还不能从公共 registry 安装。获得授权的源码开发要求本地工作区中提供这些包。
+本包为私有包，不会发布到 npm registry。仓库中已提交的 `lib/` 运行时允许从私有 GitHub 仓库安装固定的 commit，不会针对未发布的 DSH 对等依赖执行依赖构建。DSH Profile 是 pnpm workspace 根目录，因此安装命令必须包含 `-w`。
 
 ## 快速上手
 
-下面步骤假设消费方 profile 已能使用 `@deepseek-ai/dsh-trace` 及其尚未发布的 DSH 对等依赖包。
+bundle 会禁用 DSH 自带的 OTLP 遥测后端，并用本地嵌入式 yiTrace 取代它。它可能存储用户和 assistant 文本、推理、工具参数与结果、会话 id 以及所配置的身份。请先确认本地保留和脱敏策略可接受，再启动该 profile。
 
 1. 选择一个绝对本地数据目录：
 
 ```sh
 export DSH_TRACE_DATA_DIR=/absolute/path/to/dsh-traces
+export DSH_TRACE_TENANT_ID=1
 mkdir -p "$DSH_TRACE_DATA_DIR"
 ```
 
-2. 将插件添加到 profile，并禁用现有遥测后端。请先挂载所需的 `telemetry/record` 脱敏规则，再挂载 `dsh-trace`。
+2. 直接从私有 GitHub 仓库安装已审查的 commit：
 
-```yaml
-- id: telemetry-otel
-  disabled: true
-
-- id: dsh-trace
-  name: '@deepseek-ai/dsh-trace'
-  config:
-    database:
-      dataDir: !!js process.env.DSH_TRACE_DATA_DIR
-      tenantId: 1
+```sh
+dsh plugin --profile web add -w github:dsh-external/dsh-trace#<reviewed-commit>
 ```
 
-3. 正常运行 DSH。每个已完成轮次都会存入 `DSH_TRACE_DATA_DIR`；shutdown 还会关闭未完成的 span 并 flush 数据库。
+本包的 `dsh.bundle.patch` 会禁用 `telemetry-otel`，加载 `dsh-trace`（数据目录来自 `DSH_TRACE_DATA_DIR`），并加载配套的 invariant 插件。使用同样的命令并指定 `--profile headless`，即可为该独立 profile 启用插件。
+
+3. 启动 profile 前检查组合后的配置，然后启动 DSH：
+
+```sh
+dsh --profile web --dump-config
+dsh --profile web
+```
+
+配置输出必须显示 `telemetry-otel` 已禁用，并包含 `dsh-trace` 和 `dsh-trace-invariant`。每个已完成轮次都会存入 `DSH_TRACE_DATA_DIR`；shutdown 还会关闭未完成的 span 并 flush 数据库。使用 `dsh plugin --profile web remove -w @deepseek-ai/dsh-trace` 移除 bundle。
 
 4. DSH 释放数据目录后，使用 `@yitrace/db` 检查 trace：
 
@@ -109,7 +112,7 @@ try {
 
 ## 验证与 CI
 
-`pnpm run check` 会运行源码 lint、严格类型检查、针对真实嵌入式数据库和真实 YAML Loader profile 的 7 个测试、生产构建、`publint` 和纯 Node 导入 smoke。测试会关闭并重新打开 yiTrace 数据，覆盖持久的轮次／步骤／工具映射、flush 与 shutdown、错误恢复、会话隔离、配置校验、失败工具恢复和 profile 级脱敏。CI 会从由 `DSH_REPOSITORY` 和 `DSH_REPOSITORY_TOKEN` secrets 配置的仓库获取尚未发布的 DSH 包。
+项目 `.npmrc` 选择私有 `@deepseek-ai/*` scope；pnpm 11 使用 `${NPM_TOKEN}` 认证映射，该映射来自受信任的用户级 `~/.npmrc`。请设置 `NPM_TOKEN`，然后运行 `pnpm install --ignore-scripts`。SDK 包固定为经过评审的 `0.0.1-rc.2` 版本组。不要将 DSH 源码链接或 checkout 到本仓库。`pnpm run check` 会检查仓库边界、运行源码 lint 和严格类型检查、针对真实嵌入式数据库和真实 YAML Loader profile 执行 7 个测试、构建生产入口、运行 `publint` 且不创建 tarball，并用纯 Node 导入构建后的入口。CI 会将 `NPM_TOKEN` secret 映射到 setup-node 的受信任用户配置。
 
 ## Trace 映射
 
@@ -140,7 +143,7 @@ try {
 
 ## 已知限制与延期工作
 
-- **DSH 对等依赖尚未公开**：本包已可打包，但在 `@deepseek-ai/dsh-*` 对等依赖发布之前，仍无法从公共 registry 干净安装。获得授权的源码构建通过配置的 DSH 源码工作区提供这些包。
+- **私有 Git 分发**：本包不会发布到 registry。安装需要经授权的 GitHub 访问权限、pnpm `11.7.0`、已审查的 commit 和兼容的 DSH profile。
 - **数据库是原生依赖**：`@yitrace/db` 目前为 macOS arm64／x64、glibc Linux arm64／x64 和 Windows x64 提供预构建包。本包当前的 lockfile 不覆盖其他操作系统、CPU 目标和 musl Linux。
 - **只有一种本地存储模式**：该插件刻意不提供 HTTP 后端或跨机器传输。并发运行的 DSH 进程应使用各自独立的可写数据目录，除非 yiTrace 数据库已为该部署明确记录共享写入方配置。
 - **遥测重载会分隔状态**：资源释放会将已打开的 span 标记为失败并关闭，同时重置适配器的消息累积器。后续带位置的事件（`turn`/`step`）会打开一个标记为 `dsh.recovered_segment` 的 span；其输入只包含该后端实例加载后观察到的已脱敏消息事件。单独一条 `user/message` 的 payload 中没有位置信息，无法自行重建缺失的步骤。

@@ -2,6 +2,7 @@
   "name": "@deepseek-ai/dsh-trace",
   "description": "Embedded yiTrace plugin for DeepSeek Harness turns, model steps, and tool calls",
   "version": "0.0.1",
+  "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
@@ -20,9 +21,9 @@
     "test": "vitest run",
     "lint": "oxlint src tests scripts tsdown.config.ts vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "check:package": "publint --pack npm --strict && node scripts/smoke-package.mjs",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build && npm run check:package",
-    "prepack": "npm run build"
+    "check:rules": "node scripts/check-repository-rules.mjs",
+    "check:package": "publint --pack=false --strict && node scripts/smoke-package.mjs",
+    "check": "pnpm run check:rules && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:package"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -35,43 +36,41 @@
       "types": "./lib/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "files": [
     "lib/**/*.js",
-    "lib/**/*.d.ts"
+    "lib/**/*.d.ts",
+    "cordis.patch.yml"
   ],
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "license": "BSD-3-Clause",
   "dependencies": {
     "@yitrace/db": "^0.1.8",
     "@yitrace/trace-sdk": "^0.1.8",
-    "schemastery": "^3.18.0"
+    "@deepseek-ai/schemastery": "3.18.1-rc.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-invariants": "^0.0.1",
-    "@deepseek-ai/dsh-llm": "^0.0.1",
-    "@deepseek-ai/dsh-session": "^0.0.1",
-    "@deepseek-ai/dsh-session-telemetry": "^0.0.1",
-    "cordis": "^4.0.0-rc.7"
+    "@deepseek-ai/cordis": "4.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session-telemetry": "0.0.1-rc.2"
   },
   "devDependencies": {
-    "@cordisjs/plugin-include": "^1.0.4",
-    "@cordisjs/plugin-loader": "^1.0.0-rc.5",
-    "@deepseek-ai/dsh-agent": "^0.0.1",
-    "@deepseek-ai/dsh-brand": "^0.0.1",
-    "@deepseek-ai/dsh-invariants": "^0.0.1",
-    "@deepseek-ai/dsh-llm": "^0.0.1",
-    "@deepseek-ai/dsh-scope": "^0.0.1",
-    "@deepseek-ai/dsh-session": "^0.0.1",
-    "@deepseek-ai/dsh-session-telemetry": "^0.0.1",
-    "@deepseek-ai/dsh-system-prompt": "^0.0.1",
-    "@deepseek-ai/dsh-timeout": "^0.0.1",
+    "@deepseek-ai/cordis": "4.0.1-rc.1",
+    "@deepseek-ai/cordis-plugin-include": "1.0.5-rc.1",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session-telemetry": "0.0.1-rc.2",
     "@types/node": "^22.20.0",
-    "cordis": "^4.0.0-rc.7",
     "oxlint": "1.76.0",
     "publint": "^0.3.21",
     "tsdown": "^0.22.2",
