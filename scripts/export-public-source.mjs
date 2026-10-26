@@ -37,7 +37,9 @@ for (const path of [
   'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', '.gitignore',
   'LICENSE', 'README.md', 'README.zh.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md',
   '.github', 'scripts', 'packages/dsh-trace-viewer', 'legacy/yitrace-exporter',
+  'docs/assets/readme', 'docs/demo', 'docs/usage.md', 'docs/development.md', 'docs/releasing.md',
   'docs/reports/2026-10-26_standalone-open-source-verification.md',
+  'docs/reports/2026-10-26_npm-release-preparation.md',
 ]) await copy(path)
 entries.sort((a, b) => a.path.localeCompare(b.path))
 await writeFile(join(output, 'SOURCE_MANIFEST.json'), JSON.stringify({

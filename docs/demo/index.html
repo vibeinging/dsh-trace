@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>dsh-trace · Example</title>
+  <style>
+    :root { color-scheme: dark; --dsw-alias-bg-layer-1:#19191b; --dsw-alias-bg-layer-2:#222225; --dsw-alias-bg-layer-3:#303035; --dsw-alias-border-l2:#343439; --dsw-alias-label-primary:#eeeef0; --dsw-alias-label-secondary:#b7b7c0; --dsw-alias-label-tertiary:#81818e; --dsw-alias-link:#9cacf5; --dsw-alias-state-error-primary:#f48585; --dsw-alias-state-success-primary:#76c49a; --dsw-alias-interactive-bg-hover:#2c2c33; }
+    :root[data-theme="light"] { color-scheme:light; --dsw-alias-bg-layer-1:#ffffff; --dsw-alias-bg-layer-2:#f7f7f9; --dsw-alias-bg-layer-3:#e8e8ed; --dsw-alias-border-l2:#e5e5ea; --dsw-alias-label-primary:#22232a; --dsw-alias-label-secondary:#62636e; --dsw-alias-label-tertiary:#838490; --dsw-alias-link:#596fcb; --dsw-alias-state-error-primary:#cc5050; --dsw-alias-state-success-primary:#298653; --dsw-alias-interactive-bg-hover:#eeeef3; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .demo-header { height:60px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--dsw-alias-border-l2); font-size:13px; }
+    .demo-header strong { font-size:15px; font-weight:600; letter-spacing:-.3px; } .demo-header span { color:var(--dsw-alias-label-tertiary); font-size:11px; }
+    .demo-tabs { height:44px; display:flex; align-items:stretch; padding:0 24px; gap:26px; border-bottom:1px solid var(--dsw-alias-border-l2); font-size:12px; color:var(--dsw-alias-label-tertiary); }
+    .demo-tabs span { display:flex; align-items:center; } #active-tab { border-bottom:2px solid var(--dsw-alias-link); color:var(--dsw-alias-link); }
+    #root { height:calc(100vh - 104px); } #root.settings-demo { padding:30px 52px; height:auto; max-width:1050px; margin:0 auto; }
+  </style>
+</head>
+<body><header class="demo-header"><strong>dsh-trace</strong><span id="demo-label"></span></header>
+<nav class="demo-tabs"><span>Conversation</span><span>Trajectory</span><span id="active-tab">Trace</span></nav>
+<div id="root"></div><script src="/demo.js"></script></body>
+</html>

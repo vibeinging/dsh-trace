@@ -19,7 +19,7 @@ Add focused tests when changing event mapping, recording, cleanup, permissions o
 
 ## Package distribution
 
-The plugin manifest is ready for a public scoped npm package, but it has not been published. A repository checkout and local package link are the documented installation path. The root workspace is private to prevent publishing the workspace itself. Releases and npm publication are maintainer actions, not part of `pnpm run check` or CI.
+The public npm package is `@vibeinging/dsh-trace-viewer`; its README is synchronized from the root English README. The root workspace is private to prevent publishing the workspace itself. Releases and npm publication are maintainer actions, not part of `pnpm run check` or CI. Follow [the release procedure](docs/releasing.md) and publish the reviewed tarball, then verify registry metadata and installation.
 
 Keep the package license and bundled third-party notices in any distribution. Keep `lib/` runtime output aligned with source changes.
 
