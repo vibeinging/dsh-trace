@@ -1,0 +1,80 @@
+{
+  "name": "@deepseek-ai/dsh-trace",
+  "description": "Embedded yiTrace plugin for DeepSeek Harness turns, model steps, and tool calls",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsh-external/dsh-trace.git"
+  },
+  "homepage": "https://github.com/dsh-external/dsh-trace#readme",
+  "bugs": {
+    "url": "https://github.com/dsh-external/dsh-trace/issues"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "lint": "oxlint src tests scripts tsdown.config.ts vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:rules": "node scripts/check-repository-rules.mjs",
+    "check:package": "publint --pack=false --strict && node scripts/smoke-package.mjs",
+    "check": "pnpm run check:rules && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:package"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "@yitrace/db": "^0.1.8",
+    "@yitrace/trace-sdk": "^0.1.8",
+    "@deepseek-ai/schemastery": "3.18.1-rc.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session-telemetry": "0.0.1-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1-rc.1",
+    "@deepseek-ai/cordis-plugin-include": "1.0.5-rc.1",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-session-telemetry": "0.0.1-rc.2",
+    "@types/node": "^22.20.0",
+    "oxlint": "1.76.0",
+    "publint": "^0.3.21",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

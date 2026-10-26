@@ -1,0 +1,4 @@
+# Waterfall viewer with opt-in, profile-scoped local Trace recording.
+- insert:
+    - id: dsh-trace-viewer
+      name: '@vibeinging/dsh-trace-viewer'
