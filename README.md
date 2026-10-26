@@ -1,150 +1,101 @@
-# @deepseek-ai/dsh-trace
+# dsh-trace
 
 English | [中文](README.zh.md)
 
-`dsh-trace` stores DeepSeek Harness session telemetry in a local embedded yiTrace database. It observes records after the host's `telemetry/record` waterfall, projects each DSH turn into one yiTrace trace, and writes SDK-native start, log, and end events through yiTrace's Node-API database. No HTTP server, port, or token is required. The plugin is opt-in, adds no model-visible context, and lives outside the DeepSeek Harness monorepo.
+A community plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness): inspect real DSH sessions in a waterfall workbench, then manage optional local Trace copies from **Settings → Trace data**.
+
+This is an independent project. It uses the published DSH SDK and does not require a DSH source checkout, yiTrace server, database, or access token. It is not an official DeepSeek product.
 
 ## Features
 
-- **Embedded local storage** — writes directly through `@yitrace/db`; no HTTP service, port, or access token.
-- **Complete agent trace tree** — records one root trace per DSH turn, model-step spans below it, and tool-call spans below each step.
-- **Debugging context** — keeps model identity, token usage, message and tool input/output, error state, and generic in-turn log events.
-- **Lifecycle recovery** — marks traces that begin mid-turn, closes unfinished spans as failed, flushes on natural boundaries, and recovers committed data when the database reopens.
-- **Local queries** — supports yiTrace trace, span, full-text search, and aggregate APIs against the configured directory.
+- Model and tool calls on one timeline, with recorded parent links, duration, token usage and cache reads.
+- Search, failure filters, turn selection, long-history pagination and input/output details.
+- Live updates from the active DSH session; missing timing or usage stays explicitly unavailable.
+- A focus view that preserves the composer draft and still allows pending approvals and questions.
+- Optional Host-side recording of future events, with capture scope, content switches, retention and cleanup preview.
+- DSH themes and Chinese/English locale support. Trace settings live in Settings; the sidebar shortcut is optional and off by default.
 
-The plugin does not provide a viewer or built-in redaction rules. Use yiTrace-compatible local tools or the `@yitrace/db` query API to inspect the configured data directory.
+The waterfall reads DSH's existing session data. Optional recording creates separate files and is **off by default**. Cleanup only affects this plugin's own copies.
 
-## Use cases
+## Compatibility
 
-- Reconstruct an agent turn to see which model step or tool call caused a failure.
-- Compare token use, model output, and tool behavior while developing prompts or workflows.
-- Search historical local traces for repeated error messages, tool results, or session attributes.
-- Keep observability data on the same machine when an HTTP telemetry service is unnecessary or not allowed.
+| Component | Tested version |
+| --- | --- |
+| DSH SDK | `0.2.1-rc.2` |
+| Cordis | `4.0.5` |
+| React / React DOM | `18.3.1`, provided by the host |
+| Node.js | `^22.19.0` or `>=24.0.0` |
+| pnpm | `11.7.0` |
 
-## Prerequisites
+Keep DSH's official Trajectory provider enabled. Other DSH versions require verification because the RC interfaces may change.
 
-- Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0`.
-- A writable local directory for yiTrace data.
-- Git credentials with read access to the private plugin repository.
-- A compatible DSH `web` or `headless` profile that provides Session Telemetry and the invariant service.
+## Build and install
 
-The package is private and is not published to an npm registry. Its checked-in `lib/` runtime allows a pinned private GitHub commit to install without executing a dependency build against private DSH SDK packages. The install command must include `-w` because a DSH profile is a pnpm workspace root.
-
-## Quick start
-
-The bundle disables the shipped OTLP telemetry backend and replaces it with local embedded yiTrace. It can store user and assistant text, reasoning, tool arguments and results, session ids, and configured identities. Do not boot the profile until its local retention and redaction policy is acceptable.
-
-1. Choose an absolute local data directory:
+The source is open; the npm package has **not been published**. Build a local checkout:
 
 ```sh
-export DSH_TRACE_DATA_DIR=/absolute/path/to/dsh-traces
-export DSH_TRACE_TENANT_ID=1
-mkdir -p "$DSH_TRACE_DATA_DIR"
+git clone https://github.com/vibeinging/dsh-trace.git
+cd dsh-trace
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run check
 ```
 
-2. Install a reviewed commit directly from the private GitHub repository:
+In DSH Desktop, open **Plugins → Add plugin** and enter the built package's absolute path:
 
-```sh
-dsh plugin --profile web add -w github:dsh-external/dsh-trace#<reviewed-commit>
+```text
+link:/absolute/path/to/dsh-trace/packages/dsh-trace-viewer
 ```
 
-The package's `dsh.bundle.patch` disables `telemetry-otel`, loads `dsh-trace` from `DSH_TRACE_DATA_DIR`, and loads its invariant companion. Use the same command with `--profile headless` to enable that independent profile.
+Enable the plugin, open a conversation and select **Trace**. Open **Settings → Trace data** for recording and retention. If the new Host component needs a restart, quit DSH normally and reopen it.
 
-3. Inspect the composed profile before booting it, then start DSH:
+For a DSH Web profile:
 
 ```sh
-dsh --profile web --dump-config
+dsh plugin --profile web add -w link:/absolute/path/to/dsh-trace/packages/dsh-trace-viewer
 dsh --profile web
 ```
 
-The dump must show `telemetry-otel` as disabled and include `dsh-trace` plus `dsh-trace-invariant`. Each completed turn is stored under `DSH_TRACE_DATA_DIR`; shutdown also closes unfinished spans and flushes the database. Remove the bundle with `dsh plugin --profile web remove -w @deepseek-ai/dsh-trace`.
+Use the same profile when removing it:
 
-4. After DSH releases the data directory, inspect traces with `@yitrace/db`:
-
-```js
-import { YiTraceDB } from '@yitrace/db'
-
-const dataDir = process.env.DSH_TRACE_DATA_DIR
-if (!dataDir) throw new Error('DSH_TRACE_DATA_DIR is required')
-
-const tenantId = process.env.DSH_TRACE_TENANT_ID
-const database = await YiTraceDB.open({
-  dataDir,
-  ...(tenantId ? { tenantId } : {}),
-})
-
-try {
-  const traces = await database.traces()
-  console.dir(traces, { depth: null })
-
-  const first = traces[0]
-  const traceId = first?.externalTraceId
-    ?? first?.external_trace_id
-    ?? first?.traceId
-    ?? first?.trace_id
-  if (traceId !== undefined) {
-    console.dir(await database.trace(traceId), { depth: null })
-  }
-
-  console.dir(await database.search({ text: 'tool process exited' }), { depth: null })
-} finally {
-  await database.close()
-}
+```sh
+dsh plugin --profile web remove -w @vibeinging/dsh-trace-viewer
 ```
 
-Use the same `tenantId` for writing and reading. The example profile writes tenant `1`; set `DSH_TRACE_TENANT_ID=1` before running the query script.
+The repository root is a development workspace, not an installable DSH plugin. Install `packages/dsh-trace-viewer`; installing the repository URL as a root plugin is not supported. Close Desktop before changing its profile through the CLI.
 
-## Configuration reference
+## Data defaults
 
-| Field | Required or default | Purpose |
-|---|---|---|
-| `database.dataDir` | Required | Local yiTrace directory. Relative paths resolve from the process working directory at plugin load; use an absolute path for service deployments. |
-| `database.tenantId` | Optional | Unsigned 64-bit tenant scope attached to writes. Use the same value when querying. |
-| `database.maxBuffered` | `batchSize × 16` | Maximum events retained in memory after embedded ingest failures; the oldest events are dropped after the limit. |
-| `batchSize` | `256` | Events collected before one serialized embedded ingest. |
-| `nodeId` | Derived by yiTrace | Snowflake node id in `0..1023`. Parallel writers must not share an explicit value. |
-| `agentName` | Harness product identity | Agent name attached to every span. |
-| `shutdownTimeoutMillis` | `3000` | Maximum time DSH awaits shutdown. The deadline cannot cancel a native database call already in progress. |
+| Setting | Default |
+| --- | --- |
+| Recording | Off; future events only, no history backfill |
+| Capture scope when enabled | Model calls, tools, failures/interruption and compaction |
+| Model response text | Off |
+| Tool arguments/results | Off |
+| Retention | 30 days |
+| Expiry check | Every 24 hours while the Host runs |
 
-An empty data directory, invalid unsigned 64-bit tenant id, invalid node id, or non-positive size/deadline fails at plugin load.
+Copies live in the current profile's `data/dsh-trace-viewer/`. They contain session identifiers and selected event data. Content switches affect future writes; they do not remove previously recorded content or provide general redaction. Indefinite retention disables expiry. Manual cleanup requires a preview and confirmation; cleanup skips active or changed segments and never deletes original DSH sessions.
 
-The telemetry seam admits one backend per Cordis context. Loading this package together with `session-telemetry-otel` fails as a duplicate service instead of recording twice. A host-level privacy switch must disable every configured telemetry row; the plugin does not bypass that host policy.
+See the [plugin reference](packages/dsh-trace-viewer/README.md) for settings and data semantics.
 
-## Verification and CI
+## Development
 
-The project `.npmrc` selects the private `@deepseek-ai/*` scope; pnpm 11 reads its `${NPM_TOKEN}` authentication mapping from the trusted user-level `~/.npmrc`. Set `NPM_TOKEN` and run `pnpm install --ignore-scripts`. The SDK packages are pinned to the reviewed `0.0.1-rc.2` set. Do not link or check out DSH source into this repository. `pnpm run check` enforces the repository boundary, runs source linting and strict type checking, executes seven tests against a real embedded database and a real YAML Loader profile, builds the production entries, runs `publint` without creating a tarball, and imports the built entries with plain Node. CI maps the `NPM_TOKEN` secret into setup-node's trusted user configuration.
+Run `pnpm run check` from the repository root for boundary checks, lint, both Host and browser type checks, tests, build and package smoke checks. Public CI uses the same command and requires no private SDK token.
 
-## Trace mapping
+```text
+packages/dsh-trace-viewer/  Active plugin: source, tests and runtime bundle
+docs/                      Specifications and verification records
+legacy/yitrace-exporter/   Archived exporter for the old SDK; outside the workspace
+```
 
-| DSH source | yiTrace projection | Important fields |
-|---|---|---|
-| `turn/start` … `turn/end` | One root `dsh.turn` span and one yiTrace trace | DSH session id, turn number, end reason, status |
-| `step/start` … `step/end` | Child `dsh.step` span | provider, model, token usage, latest system prompt, redacted message history observed by this backend instance, assistant output |
-| `tool/call` … `tool/result` | Child `tool.<name>` span | call id, tool name, arguments, result, error status |
-| Other ledger events inside an open turn | yiTrace log event on the open step or turn | event type, source seq, redacted body |
-| `agent-error` | Error log plus failed open step/turn | normalized error name and body |
-| `shutdown` | Close any still-open spans as failed, then flush and close the database | no synthetic standalone span |
+The old exporter replaces a telemetry backend and uses a different SDK and data store. It is not required by this plugin. Old pinned Git commits remain available; see its [archive notes](legacy/yitrace-exporter/README.md).
 
-The adapter preserves source event timestamps and derives span duration from their millisecond times. `@yitrace/trace-sdk` owns deterministic event ids, batching, and wire encoding; `@yitrace/db` owns the embedded write-ahead log, recovery, durable read models, and queries. DSH string session ids are mapped to yiTrace's numeric `session_id` through deterministic FNV-1a 64-bit hashing; the original id remains in `dsh.session.id` span attributes.
+## Current limits
 
-## Data and reliability boundary
+The viewer covers the current session, not cross-session search or run comparison. The data page does not yet browse or export saved copies. Child-agent traces only appear when the host supplies their relationship. Large-history pagination is supported; a general large-scale performance benchmark is not available.
 
-Every record passes the seam's `telemetry/record` waterfall before this backend reads it. User and assistant text, reasoning, tool arguments/results, generic event bodies, the session id, and configured agent/tenant identity may be stored in `database.dataDir`. The seam ships no redaction rules, so a deployment that must not retain raw sensitive values mounts its own rule before enabling yiTrace. The data remains local to the configured directory; the plugin does not open a network connection.
+## Contributing and license
 
-`emit()` creates yiTrace SDK events and enqueues them in memory. Turn/session flush hints are serialized: each drains `BatchExporter`, retries the bounded embedded-write buffer, and flushes the database. Disposal closes unfinished spans, drains the same queue, flushes yiTrace's durable state, and closes the database within the configured deadline. An abrupt process crash can still lose events that had not reached the embedded database, while committed yiTrace data is recovered when the directory is reopened.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 
-## Model Experience
-
-None, as the plugin observes post-log session records and never changes a model request, tool schema, or response.
-
-#### KV Cache effect
-
-None; this package neither assembles nor sends provider requests.
-
-## Known Limitations and Deferred Work
-
-- **Private Git distribution** — the package is not published to a registry. Installation requires authorized GitHub access, pnpm `11.7.0`, a reviewed commit, and a compatible DSH profile.
-- **The database is a native dependency** — `@yitrace/db` currently supplies prebuilt packages for macOS arm64/x64, glibc Linux arm64/x64, and Windows x64. Other operating systems, CPU targets, and musl Linux are not covered by this package's current lockfile.
-- **One local storage mode** — the plugin deliberately has no HTTP backend or cross-machine transport. Give concurrently running DSH processes separate writable data directories unless the yiTrace database documents a shared-writer setup for that deployment.
-- **State is segmented across telemetry reloads** — disposal closes open spans as failed and resets the adapter's message accumulator. A later positioned event (`turn`/`step`) opens a span marked `dsh.recovered_segment`; its input includes only redacted message events observed after that backend instance loaded. A lone `user/message` has no position in its payload and cannot reconstruct a missing step by itself.
-- **Hashed session identity** — yiTrace's TypeScript SDK accepts a numeric `session_id`, while DSH owns opaque string ids. FNV-1a makes the mapping stable but leaves a theoretical 64-bit collision risk; a future SDK string-id surface would remove this compromise.
+BSD-3-Clause; see [LICENSE](LICENSE). Bundled TanStack Virtual code retains its [MIT notice](packages/dsh-trace-viewer/THIRD_PARTY_NOTICES.md).

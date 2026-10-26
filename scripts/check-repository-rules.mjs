@@ -4,126 +4,81 @@ import { extname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
-const dependencyFields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
-const localSpecifier = /^(?:file|link|workspace):/
+const active = join(root, 'packages/dsh-trace-viewer')
+const read = path => readFile(path, 'utf8')
+const workspace = JSON.parse(await read(join(root, 'package.json')))
+const manifest = JSON.parse(await read(join(active, 'package.json')))
+assert.equal(workspace.name, 'dsh-trace-workspace')
+assert.equal(workspace.private, true, 'Publish the plugin, not the development workspace')
+for (const key of ['main', 'types', 'exports', 'dsh', 'dependencies', 'devDependencies']) {
+  assert.equal(workspace[key], undefined, `The workspace must not expose runtime ${key}`)
+}
+assert.match(await read(join(root, 'pnpm-workspace.yaml')), /packages\/dsh-trace-viewer/u)
+assert.doesNotMatch(await read(join(root, 'pnpm-workspace.yaml')), /legacy/u)
+assert.equal(manifest.name, '@vibeinging/dsh-trace-viewer')
+assert.notEqual(manifest.private, true)
+assert.equal(manifest.publishConfig?.access, 'public')
+assert.equal(manifest.license, 'BSD-3-Clause')
+assert.equal(manifest.repository?.url, 'git+https://github.com/vibeinging/dsh-trace.git')
+assert.equal(manifest.repository?.directory, 'packages/dsh-trace-viewer')
+assert.equal(manifest.packageManager, workspace.packageManager)
+assert.deepEqual(manifest.engines, workspace.engines)
+assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
+assert.equal(manifest.dsh?.client?.platform, 'web')
 
-assert.equal(packageJson.private, true, 'private plugins must reject npm publication')
-assert.equal(packageJson.publishConfig, undefined, 'private plugins must not declare publishConfig')
-assert.equal(packageJson.packageManager, 'pnpm@11.7.0')
-assert.equal(packageJson.engines?.node, '^22.19.0 || >=24.0.0')
-for (const script of Object.keys(packageJson.scripts ?? {})) {
-  assert.equal(
-    script === 'prepack' || script === 'prepare' || script.includes('publish'),
-    false,
-    `private Git installs must not define ${script}`,
-  )
-}
-for (const [name, command] of Object.entries(packageJson.scripts ?? {})) {
-  assert.equal(/(?:npm|pnpm)\s+(?:publish|pack)\b/.test(String(command)), false, `${name} creates or publishes a package`)
-  if (/\bpublint\b/.test(String(command))) {
-    assert.match(String(command), /--pack=false\b/, `${name} must keep publint from creating a tarball`)
-  }
-}
-for (const field of dependencyFields) {
-  for (const [name, specifier] of Object.entries(packageJson[field] ?? {})) {
-    assert.equal(localSpecifier.test(String(specifier)), false, `${field}.${name} must resolve from a registry`)
-    assert.equal(['cordis', 'schemastery', '@cordisjs/plugin-include', '@cordisjs/plugin-loader'].includes(name), false, `${field}.${name} must use the official private SDK name`)
-  }
-}
-for (const [name, specifier] of Object.entries(packageJson.peerDependencies ?? {})) {
-  if (name.startsWith('@deepseek-ai/')) {
-    assert.ok(packageJson.devDependencies?.[name], `${name} must also be an official SDK devDependency`)
-    assert.equal(packageJson.devDependencies[name], specifier, `${name} must use the same peer and development version`)
-  }
-}
-
-const npmrc = await readFile(join(root, '.npmrc'), 'utf8')
-assert.equal(npmrc, '@deepseek-ai:registry=https://registry.npmjs.org/\n')
-assert.equal(Object.keys(packageJson.exports ?? {}).some(key => key.startsWith('./src')), false)
-assert.equal((packageJson.files ?? []).some(file => file === 'src' || file.startsWith('src/')), false)
-const patchPath = packageJson.dsh?.bundle?.patch
-assert.equal(typeof patchPath, 'string', 'dsh.bundle.patch is required')
-await access(join(root, patchPath))
-await access(join(root, packageJson.main))
-await access(join(root, packageJson.types))
-
-const declaredRuntime = new Set([
-  ...Object.keys(packageJson.dependencies ?? {}),
-  ...Object.keys(packageJson.optionalDependencies ?? {}),
-  ...Object.keys(packageJson.peerDependencies ?? {}),
+const runtime = new Set([
+  ...Object.keys(manifest.dependencies ?? {}),
+  ...Object.keys(manifest.optionalDependencies ?? {}),
+  ...Object.keys(manifest.peerDependencies ?? {}),
 ])
-const declaredDevelopment = new Set([...declaredRuntime, ...Object.keys(packageJson.devDependencies ?? {})])
-const importPattern = /(?:from\s+|import\s*(?:\(\s*)?)['"](@deepseek-ai\/[A-Za-z0-9_-]+)/g
+const development = new Set([...runtime, ...Object.keys(manifest.devDependencies ?? {})])
+for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+  for (const [name, version] of Object.entries(manifest[field] ?? {})) {
+    assert.doesNotMatch(version, /^(?:file|link|workspace):/u, `${field}.${name} requires a local checkout`)
+    assert.ok(!['cordis', 'schemastery', '@cordisjs/plugin-include', '@cordisjs/plugin-loader'].includes(name), `${name} must use the official SDK name`)
+    if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, '0.2.1-rc.2', `${name} changed SDK target`)
+  }
+}
+for (const lifecycle of ['prepare', 'prepack', 'postinstall', 'prepublishOnly']) {
+  assert.equal(manifest.scripts[lifecycle], undefined, `Unexpected automatic ${lifecycle} lifecycle`)
+}
+assert.equal(await read(join(root, '.npmrc')), '@deepseek-ai:registry=https://registry.npmjs.org/\n')
+assert.equal(await read(join(active, '.npmrc')), '@deepseek-ai:registry=https://registry.npmjs.org/\n')
+for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+  await access(join(active, file))
+  assert.ok(manifest.files.includes(file), `Missing package notice: ${file}`)
+}
 
 async function filesBelow(directory) {
-  const base = join(root, directory)
-  let entries
-  try {
-    entries = await readdir(base, { withFileTypes: true })
-  } catch (error) {
-    if (error?.code === 'ENOENT') return []
-    throw error
-  }
   const files = []
-  for (const entry of entries) {
-    const path = join(base, entry.name)
-    if (entry.isDirectory()) files.push(...await filesBelow(relative(root, path)))
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...await filesBelow(path))
     else files.push(path)
   }
   return files
 }
 
-for (const directory of ['src', 'tests', 'scripts', 'shared']) {
-  for (const file of await filesBelow(directory)) {
-    if (!['.ts', '.tsx', '.js', '.mjs', '.mts', '.cts'].includes(extname(file))) continue
-    const source = await readFile(file, 'utf8')
-    assert.equal(/(?:from\s+|import\s*(?:\(\s*)?)['"](?:cordis|schemastery|@cordisjs\/plugin-(?:include|loader))['"]/.test(source), false, `${relative(root, file)} imports a public SDK twin`)
-    for (const match of source.matchAll(importPattern)) {
-      const name = match[1]
-      if (name === packageJson.name) continue
-      const declared = directory === 'src' ? declaredRuntime : declaredDevelopment
-      assert.ok(declared.has(name), `${relative(root, file)} imports undeclared ${name}`)
+const sdkImport = /(?:from\s+|import\s*(?:\(\s*)?)['"](@deepseek-ai\/[A-Za-z0-9_-]+)/gu
+const sourceCheckout = /test-vibeinging|deepseek-harness\/packages|\.dsh\/source\/current\//u
+for (const area of ['src', 'tests', 'scripts', 'shared']) {
+  for (const path of await filesBelow(join(active, area))) {
+    if (!['.ts', '.tsx', '.js', '.mjs'].includes(extname(path))) continue
+    const source = await read(path)
+    assert.doesNotMatch(source, sourceCheckout, `${relative(root, path)} imports a DSH source checkout`)
+    for (const match of source.matchAll(sdkImport)) {
+      assert.ok((area === 'src' ? runtime : development).has(match[1]), `${relative(root, path)} imports undeclared ${match[1]}`)
     }
   }
 }
-
-const isBrowserPlugin = Object.keys(packageJson.peerDependencies ?? {})
-  .some(name => name.startsWith('@deepseek-ai/dsh-client-'))
-if (isBrowserPlugin) {
-  await access(join(root, 'shared', 'tsdown.client.ts'))
-  const tsdownConfig = await readFile(join(root, 'tsdown.config.ts'), 'utf8')
-  assert.match(tsdownConfig, /from ['"]\.\/shared\/tsdown\.client\.ts['"]/, 'browser plugins must use the shared client preset')
+const ci = await read(join(root, '.github/workflows/ci.yml'))
+assert.doesNotMatch(ci, /NPM_TOKEN|NODE_AUTH_TOKEN|no-frozen-lockfile/u, 'Public CI must install without private SDK credentials')
+assert.match(ci, /pnpm install --frozen-lockfile --ignore-scripts/u)
+for (const file of ['README.md', 'README.zh.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md']) {
+  const source = await read(join(root, file))
+  assert.doesNotMatch(source, /dsh-external|\/Users\/|\/private\/tmp\//u, `${file} contains an internal location`)
 }
-
-const forbiddenCheckout = /test-vibeinging|deepseek-harness\/packages|\.dsh\/source\/current/
-for (const directory of ['src', 'tests', 'docs', 'compat', 'shared', '.github']) {
-  for (const file of await filesBelow(directory)) {
-    if (file.includes(`${join('docs', 'assets')}${process.platform === 'win32' ? '\\' : '/'}`)) continue
-    const extension = extname(file)
-    if (!['.ts', '.tsx', '.js', '.mjs', '.md', '.yml', '.yaml', '.json'].includes(extension)) continue
-    const source = await readFile(file, 'utf8')
-    assert.equal(forbiddenCheckout.test(source), false, `${relative(root, file)} references a DSH source checkout`)
-    assert.equal(/[\p{Emoji_Presentation}\uFE0F\u200D\p{Regional_Indicator}\u2600-\u27BF]/u.test(source), false, `${relative(root, file)} contains emoji`)
-  }
+for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
+  assert.doesNotMatch(await read(join(root, file)), /(?:^|[\s"'=])(?:file|link|workspace):/mu, `${file} contains a local dependency`)
 }
-
-for (const file of ['README.md', 'README.zh.md']) {
-  const source = await readFile(join(root, file), 'utf8')
-  assert.equal(forbiddenCheckout.test(source), false, `${file} references a DSH source checkout`)
-  assert.equal(/[\p{Emoji_Presentation}\uFE0F\u200D\p{Regional_Indicator}\u2600-\u27BF]/u.test(source), false, `${file} contains emoji`)
-}
-
-for (const file of ['package.json', 'tsconfig.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
-  try {
-    const source = await readFile(join(root, file), 'utf8')
-    assert.equal(/(?:^|[\s"'=])(?:file|link|workspace):/m.test(source), false, `${file} contains a local dependency protocol`)
-    if (file.startsWith('tsconfig')) {
-      assert.equal(forbiddenCheckout.test(source), false, `${file} references a DSH source checkout`)
-    }
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
-  }
-}
-
-console.log(`repository rules: ${packageJson.name} passed`)
+console.log(`repository rules: independent ${manifest.name} workspace passed`)

@@ -11,6 +11,9 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [24, 26]
     steps:
       - name: Check out dsh-trace
         uses: actions/checkout@v4
@@ -18,26 +21,14 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           registry-url: https://registry.npmjs.org
-          scope: '@deepseek-ai'
 
       - name: Install pnpm
         run: npm install --global pnpm@11.7.0
 
-      - name: Require private SDK access
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "::error::Set NPM_TOKEN to a token that can read the private @deepseek-ai SDK packages."
-            exit 1
-          fi
-
       - name: Install dsh-trace
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Verify dsh-trace
         run: pnpm run check
